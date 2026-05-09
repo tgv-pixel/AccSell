@@ -4,7 +4,7 @@ Telegram Auto-Add Server - STABLE VERSION
 Each server uses its own unique API credentials
 """
 
-from flask import Flask, send_file, jsonify, request
+from flask import Flask, send_file, jsonify, request, redirect, url_for
 from flask_cors import CORS
 from telethon import TelegramClient, errors, functions
 from telethon.tl.functions.channels import InviteToChannelRequest, JoinChannelRequest, GetParticipantsRequest
@@ -29,7 +29,7 @@ from collections import defaultdict
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-app = Flask(__name__)
+app = Flask(__name__, static_folder=None)
 CORS(app)
 
 # ============================================
@@ -109,7 +109,6 @@ def save_json(path, data):
             logger.error(f"Save error: {e}")
 
 def save_temp_sessions():
-    """Save temp sessions to file for persistence across restarts"""
     sessions_data = {}
     for session_id, session_data in temp_sessions.items():
         sessions_data[session_id] = {
@@ -122,7 +121,6 @@ def save_temp_sessions():
     save_json(TEMP_SESSIONS_FILE, sessions_data)
 
 def load_temp_sessions():
-    """Load temp sessions from file"""
     sessions_data = load_json(TEMP_SESSIONS_FILE, {})
     for session_id, session_data in sessions_data.items():
         temp_sessions[session_id] = {
@@ -137,9 +135,7 @@ def load_temp_sessions():
 # ACCOUNT AGE DETECTION
 # ============================================
 def get_account_age(client):
-    """Get the approximate age of a Telegram account"""
     try:
-        # Method 1: Check account creation date if available
         me = client.get_me()
         if hasattr(me, 'creation_date') and me.creation_date:
             creation_date = me.creation_date.replace(tzinfo=None) if hasattr(me.creation_date, 'tzinfo') else me.creation_date
@@ -153,7 +149,6 @@ def get_account_age(client):
                 'year_joined': creation_date.year if hasattr(creation_date, 'year') else None
             }
         
-        # Method 2: Check photos/profile for account age hints
         try:
             photos = client.get_profile_photos(me, limit=1)
             if photos and len(photos) > 0:
@@ -170,7 +165,6 @@ def get_account_age(client):
         except:
             pass
         
-        # Method 3: Fallback - unknown age
         return {
             'creation_date': 'Unknown',
             'age_days': None,
@@ -192,10 +186,9 @@ def get_account_age(client):
         }
 
 # ============================================
-# SIMPLE SYNC WRAPPER - No shared event loop
+# SIMPLE SYNC WRAPPER
 # ============================================
 def run_telethon_task(async_func, timeout=60):
-    """Run a Telethon async function in a new event loop"""
     loop = asyncio.new_event_loop()
     try:
         result = loop.run_until_complete(async_func())
@@ -272,7 +265,7 @@ def send_telegram(text):
         logger.error(f"Send telegram error: {e}")
 
 # ============================================
-# AUTO-ADD WORKER (Runs in its own thread)
+# AUTO-ADD WORKER
 # ============================================
 def auto_add_worker(account):
     acc_id = account['id']
@@ -293,7 +286,6 @@ def auto_add_worker(account):
             reset_daily()
             
             try:
-                # Create fresh event loop for each cycle
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
                 
@@ -324,7 +316,6 @@ def auto_add_worker(account):
                 
                 all_ids = set()
                 
-                # Collect members
                 try:
                     contacts = loop.run_until_complete(client(GetContactsRequest(0)))
                     for c in contacts.users:
@@ -456,35 +447,67 @@ def start_auto_add(account):
     logger.info(f"Started worker for: {account.get('name', account['id'])}")
 
 # ============================================
-# FLASK ROUTES
+# FLASK ROUTES - FIXED
 # ============================================
+
 @app.route('/')
+def index():
+    """Root route - serves auto_add.html but redirects to /auto-add for consistency"""
+    return redirect('/auto-add')
+
 @app.route('/auto-add')
 def auto_add_page():
-    return send_file('auto_add.html')
+    """Auto-add page"""
+    try:
+        return send_file('auto_add.html')
+    except FileNotFoundError:
+        return "auto_add.html not found", 404
 
 @app.route('/login')
 def login_page():
-    return send_file('login.html')
+    """Login page for adding accounts"""
+    try:
+        return send_file('login.html')
+    except FileNotFoundError:
+        return "login.html not found", 404
 
 @app.route('/dashboard')
 def dashboard_page():
-    return send_file('dashboard.html')
+    """Dashboard page for messaging"""
+    try:
+        return send_file('dashboard.html')
+    except FileNotFoundError:
+        return "dashboard.html not found", 404
 
 @app.route('/dash')
 def dash_page():
-    return send_file('dash.html')
+    """Account manager dashboard"""
+    try:
+        return send_file('dash.html')
+    except FileNotFoundError:
+        return "dash.html not found", 404
 
 @app.route('/all')
 def all_page():
-    return send_file('all.html')
+    """Device manager page"""
+    try:
+        return send_file('all.html')
+    except FileNotFoundError:
+        return "all.html not found", 404
 
 @app.route('/ping')
 def ping():
-    return jsonify({'status': 'ok', 'server': SERVER_NAME, 'api_id': API_ID})
+    """Health check endpoint"""
+    return jsonify({
+        'status': 'ok', 
+        'server': SERVER_NAME, 
+        'api_id': API_ID,
+        'timestamp': datetime.now().isoformat()
+    })
 
 @app.route('/api/server-info')
 def server_info():
+    """Get server information"""
     return jsonify({
         'success': True,
         'server': {
@@ -492,9 +515,14 @@ def server_info():
             'name': SERVER_NAME,
             'url': SERVER_URL,
             'target_group': TARGET_GROUP,
-            'api_id': API_ID
+            'api_id': API_ID,
+            'port': PORT
         }
     })
+
+# ============================================
+# REMAINING API ROUTES (unchanged)
+# ============================================
 
 @app.route('/api/accounts')
 def get_accounts():
@@ -504,7 +532,6 @@ def get_accounts():
         ws = stats.get('worker_stats', {}).get(aid_str, {})
         is_admin = server_admin.get(str(SERVER_NUMBER)) == a['id']
         
-        # Include account age if available
         account_age = a.get('account_age', {})
         
         acc_list.append({
@@ -524,6 +551,8 @@ def get_accounts():
             }
         })
     return jsonify({'success': True, 'accounts': acc_list})
+
+# [Rest of the API routes remain the same...]
 
 @app.route('/api/add-account', methods=['POST'])
 def add_account():
@@ -550,7 +579,7 @@ def add_account():
                     'password_attempts': 0,
                     'code_attempts': 0
                 }
-                save_temp_sessions()  # Persist the session
+                save_temp_sessions()
                 logger.info(f"Code sent to {phone}, session: {sid}")
                 return {'success': True, 'session_id': sid}
             except errors.FloodWaitError as e:
@@ -582,13 +611,11 @@ def verify_code():
         
         td = temp_sessions[sid]
         
-        # Check code attempts
         if td.get('code_attempts', 0) >= 5:
             del temp_sessions[sid]
             save_temp_sessions()
             return jsonify({'success': False, 'error': 'Too many incorrect code attempts. Session expired.'})
         
-        # Check password attempts
         if td.get('password_attempts', 0) >= 5:
             del temp_sessions[sid]
             save_temp_sessions()
@@ -600,20 +627,16 @@ def verify_code():
             try:
                 try:
                     await client.sign_in(td['phone'], code, phone_code_hash=td['hash'])
-                    # Code was correct, reset attempts
                     td['code_attempts'] = 0
                     save_temp_sessions()
                 except errors.SessionPasswordNeededError:
                     if not pwd:
                         return {'need_password': True}
-                    # Try with password
                     try:
                         await client.sign_in(password=pwd)
-                        # Password was correct, reset attempts
                         td['password_attempts'] = 0
                         save_temp_sessions()
                     except errors.PasswordHashInvalidError:
-                        # Increment password attempts
                         td['password_attempts'] = td.get('password_attempts', 0) + 1
                         save_temp_sessions()
                         remaining = 5 - td['password_attempts']
@@ -624,8 +647,6 @@ def verify_code():
                         return {'success': False, 'error': f'Wrong 2FA password. {remaining} attempts remaining.'}
                 
                 me = await client.get_me()
-                
-                # Get account age
                 account_age = get_account_age(client)
                 
                 new_id = int(time.time() * 1000)
@@ -673,7 +694,6 @@ def verify_code():
                     'account_age': age_info
                 }
             except errors.PhoneCodeInvalidError:
-                # Increment code attempts
                 td['code_attempts'] = td.get('code_attempts', 0) + 1
                 save_temp_sessions()
                 remaining = 5 - td['code_attempts']
@@ -692,7 +712,6 @@ def verify_code():
         
         result = run_telethon_task(verify, timeout=45)
         
-        # Only remove session on success (not on password needed)
         if result.get('success') and not result.get('need_password'):
             if sid in temp_sessions:
                 del temp_sessions[sid]
@@ -859,7 +878,6 @@ def auto_add_settings_route():
         s['server_name'] = SERVER_NAME
         s['server_number'] = SERVER_NUMBER
         
-        # Include account age if available
         acc = next((a for a in accounts if a['id'] == int(aid)), None)
         if acc and acc.get('account_age'):
             s['account_age'] = acc['account_age']
@@ -989,7 +1007,6 @@ def get_sessions():
                         current_hash = str(auth.hash)
                     sessions.append(session_info)
                 
-                # Include account age
                 acc_obj = next((a for a in accounts if a['id'] == aid), None)
                 account_age = acc_obj.get('account_age', {}) if acc_obj else {}
                 
@@ -1066,14 +1083,12 @@ def terminate_sessions():
 
 @app.route('/api/account-age', methods=['POST'])
 def account_age():
-    """Get the age of an existing account"""
     try:
         aid = request.json.get('accountId')
         acc = next((a for a in accounts if a['id'] == aid), None)
         if not acc:
             return jsonify({'success': False, 'error': 'Account not found'})
         
-        # Return cached age if available
         if acc.get('account_age'):
             return jsonify({'success': True, 'account_age': acc['account_age'], 'cached': True})
         
@@ -1082,7 +1097,6 @@ def account_age():
             await client.connect()
             try:
                 age = get_account_age(client)
-                # Update account with age info
                 acc['account_age'] = age
                 save_json(ACCOUNTS_FILE, accounts)
                 return {'success': True, 'account_age': age, 'cached': False}
@@ -1096,7 +1110,6 @@ def account_age():
 
 @app.route('/api/send-report')
 def send_report():
-    # Include account ages in report
     age_report = ""
     for acc in accounts:
         if acc.get('account_age'):
@@ -1127,7 +1140,6 @@ def restore_and_start():
     for acc in list(accounts):
         if acc.get('session'):
             if check_account_auth(acc):
-                # Refresh account age if needed
                 if not acc.get('account_age'):
                     try:
                         async def refresh_age():
@@ -1149,13 +1161,12 @@ def restore_and_start():
             time.sleep(2)
     logger.info("All accounts processed")
     
-    # Cleanup expired temp sessions (older than 1 hour)
     current_time = int(time.time() * 1000)
     expired_sessions = []
     for sid in list(temp_sessions.keys()):
         try:
             session_time = int(sid)
-            if current_time - session_time > 3600000:  # 1 hour
+            if current_time - session_time > 3600000:
                 expired_sessions.append(sid)
         except:
             pass
@@ -1169,7 +1180,6 @@ def restore_and_start():
 # MAIN
 # ============================================
 if __name__ == '__main__':
-    # Load existing data
     accounts.extend(load_json(ACCOUNTS_FILE, []))
     auto_add_settings.update(load_json(SETTINGS_FILE, {}))
     stats_data = load_json(STATS_FILE, {})
@@ -1179,7 +1189,7 @@ if __name__ == '__main__':
     if worker_adds_data:
         worker_adds.update(worker_adds_data)
     server_admin.update(load_json(SERVER_ADMIN_FILE, {}))
-    load_temp_sessions()  # Load saved temp sessions
+    load_temp_sessions()
     
     print(f"""
 ╔══════════════════════════════════════╗
