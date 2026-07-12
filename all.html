@@ -3,443 +3,251 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Device Manager - Telegram Auto-Add</title>
+    <title>Device List - Auto-Add System</title>
     <style>
         * {
             margin: 0;
             padding: 0;
             box-sizing: border-box;
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
         }
 
         body {
+            min-height: 100vh;
             background: #0e1621;
             color: #fff;
-            min-height: 100vh;
-            padding: 20px;
+            padding: 16px;
         }
 
         .container {
-            max-width: 900px;
+            max-width: 600px;
             margin: 0 auto;
         }
 
-        .header {
-            background: #17212b;
-            border-radius: 16px;
-            padding: 24px;
-            margin-bottom: 24px;
-            border: 1px solid #2b3945;
+        .page-header {
             display: flex;
             align-items: center;
             justify-content: space-between;
-            flex-wrap: wrap;
-            gap: 15px;
+            padding: 16px 0;
+            margin-bottom: 20px;
+            border-bottom: 1px solid #2b3945;
         }
 
-        .header h1 {
-            font-size: 1.8rem;
-            color: #fff;
+        .page-title {
+            font-size: 1.4rem;
+            font-weight: 700;
         }
 
-        .header p {
-            color: #8e9fad;
-            margin-top: 8px;
-        }
-
-        .nav-buttons {
-            display: flex;
-            gap: 12px;
-        }
-
-        .nav-btn {
+        .back-btn {
             background: #2b3945;
             color: #6ab2f2;
             text-decoration: none;
-            padding: 10px 20px;
+            padding: 10px 18px;
             border-radius: 30px;
-            font-size: 0.95rem;
-            transition: all 0.2s;
+            font-size: 0.9rem;
+            font-weight: 500;
+            transition: 0.2s;
             border: none;
             cursor: pointer;
         }
 
-        .nav-btn:hover {
+        .back-btn:hover {
             background: #3a4a5a;
         }
 
-        .account-selector {
+        .stats-bar {
+            display: flex;
+            gap: 12px;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+        }
+
+        .stat-card {
+            flex: 1;
+            min-width: 120px;
             background: #17212b;
             border-radius: 16px;
-            padding: 20px;
-            margin-bottom: 24px;
+            padding: 16px;
+            text-align: center;
             border: 1px solid #2b3945;
         }
 
-        .account-selector h3 {
+        .stat-value {
+            font-size: 2rem;
+            font-weight: 700;
+            color: #4c9ce0;
+        }
+
+        .stat-label {
+            font-size: 0.8rem;
             color: #8e9fad;
-            margin-bottom: 16px;
-            font-size: 1rem;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
+            margin-top: 4px;
         }
 
-        .account-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-            gap: 12px;
-        }
-
-        .account-card {
-            background: #242f3d;
-            border: 2px solid #2b3945;
-            border-radius: 12px;
-            padding: 15px;
-            cursor: pointer;
-            transition: all 0.2s;
+        .device-card {
+            background: #17212b;
+            border-radius: 16px;
+            padding: 16px;
+            margin-bottom: 12px;
+            border: 1px solid #2b3945;
             display: flex;
             align-items: center;
-            gap: 12px;
-            position: relative;
+            gap: 16px;
+            transition: 0.2s;
         }
 
-        .account-card:hover {
-            background: #2b3945;
+        .device-card.active-device {
+            border-color: #20b2aa;
+            background: rgba(32, 178, 170, 0.05);
         }
 
-        .account-card.selected {
-            border-color: #4c9ce0;
-            background: #2b5278;
+        .device-card.dead-device {
+            border-color: #8e2b2b;
+            opacity: 0.7;
         }
 
-        .account-avatar {
-            width: 45px;
-            height: 45px;
+        .device-avatar {
+            width: 50px;
+            height: 50px;
             border-radius: 50%;
             background: linear-gradient(145deg, #2b5278, #4c9ce0);
             display: flex;
             align-items: center;
             justify-content: center;
             font-size: 1.3rem;
-            font-weight: 600;
+            font-weight: 700;
+            color: white;
             flex-shrink: 0;
         }
 
-        .account-info {
+        .device-avatar.dead {
+            background: linear-gradient(145deg, #8e2b2b, #e04c4c);
+        }
+
+        .device-info {
             flex: 1;
             min-width: 0;
         }
 
-        .account-info h4 {
+        .device-name {
+            font-weight: 600;
             font-size: 1rem;
-            margin-bottom: 4px;
-            display: flex;
-            align-items: center;
-            gap: 6px;
-            flex-wrap: wrap;
-        }
-
-        .account-info p {
-            font-size: 0.8rem;
-            color: #8e9fad;
-        }
-
-        .auto-add-badge {
-            background: #1e4a2b;
-            color: white;
-            font-size: 0.65rem;
-            padding: 2px 6px;
-            border-radius: 30px;
-            display: inline-block;
-        }
-
-        /* Account Age Badge */
-        .account-age-badge {
-            display: inline-flex;
-            align-items: center;
-            gap: 4px;
-            background: linear-gradient(135deg, #2b5278, #1e3a4a);
-            color: #6ab2f2;
-            font-size: 0.7rem;
-            padding: 3px 8px;
-            border-radius: 30px;
-            margin-top: 6px;
-            border: 1px solid #4c9ce0;
-        }
-
-        .account-age-badge.older {
-            background: linear-gradient(135deg, #1e6e2b, #1a4a22);
-            color: #4c9e4c;
-            border-color: #4c9e4c;
-        }
-
-        .account-age-badge.newer {
-            background: linear-gradient(135deg, #8e6b2b, #6e4a1e);
-            color: #ffaa00;
-            border-color: #ffaa00;
-        }
-
-        .account-age-icon {
-            font-size: 0.8rem;
-        }
-
-        .devices-section {
-            background: #17212b;
-            border-radius: 16px;
-            padding: 24px;
-            border: 1px solid #2b3945;
-        }
-
-        .section-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 20px;
-            flex-wrap: wrap;
-            gap: 15px;
-        }
-
-        .section-header h2 {
-            font-size: 1.3rem;
             color: #fff;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
         }
 
-        .terminate-all-btn {
-            background: #8e2b2b;
-            color: white;
-            border: none;
-            padding: 10px 20px;
-            border-radius: 30px;
-            font-size: 0.95rem;
-            cursor: pointer;
-            transition: all 0.2s;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-
-        .terminate-all-btn:hover:not(:disabled) {
-            background: #a53333;
-        }
-
-        .terminate-all-btn:disabled {
-            opacity: 0.5;
-            cursor: not-allowed;
-        }
-
-        .devices-list {
-            display: flex;
-            flex-direction: column;
-            gap: 12px;
-        }
-
-        .device-item {
-            background: #242f3d;
-            border: 1px solid #2b3945;
-            border-radius: 12px;
-            padding: 18px;
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            transition: all 0.2s;
-        }
-
-        .device-item.current {
-            border-color: #4c9ce0;
-            background: #1e3a4a;
-        }
-
-        .device-info {
-            display: flex;
-            align-items: center;
-            gap: 16px;
-            flex: 1;
-        }
-
-        .device-icon {
-            width: 45px;
-            height: 45px;
-            border-radius: 50%;
-            background: #2b3945;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 1.5rem;
-        }
-
-        .device-details h4 {
-            font-size: 1.1rem;
-            margin-bottom: 6px;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            flex-wrap: wrap;
-        }
-
-        .current-badge {
-            background: #4c9ce0;
-            color: white;
-            font-size: 0.7rem;
-            padding: 3px 8px;
-            border-radius: 30px;
-            text-transform: uppercase;
-        }
-
-        .device-details p {
+        .device-phone {
+            font-size: 0.8rem;
             color: #8e9fad;
-            font-size: 0.9rem;
-            display: flex;
-            gap: 15px;
-            flex-wrap: wrap;
         }
 
-        .device-details p span {
-            display: flex;
-            align-items: center;
-            gap: 5px;
+        .device-meta {
+            font-size: 0.75rem;
+            color: #8e9fad;
+            margin-top: 2px;
+        }
+
+        .device-status {
+            font-size: 0.75rem;
+            font-weight: 600;
+            padding: 4px 10px;
+            border-radius: 20px;
+            white-space: nowrap;
+        }
+
+        .status-active {
+            background: rgba(32, 178, 170, 0.2);
+            color: #20b2aa;
+        }
+
+        .status-running {
+            background: rgba(76, 156, 224, 0.2);
+            color: #4c9ce0;
+        }
+
+        .status-dead {
+            background: rgba(255, 68, 68, 0.2);
+            color: #ff6b6b;
+        }
+
+        .status-paused {
+            background: rgba(255, 170, 0, 0.2);
+            color: #ffaa00;
         }
 
         .device-actions {
             display: flex;
-            gap: 10px;
+            gap: 8px;
+            flex-shrink: 0;
         }
 
-        .terminate-btn {
-            background: #8e2b2b;
-            color: white;
-            border: none;
-            padding: 8px 16px;
-            border-radius: 30px;
-            font-size: 0.9rem;
-            cursor: pointer;
-            transition: all 0.2s;
-        }
-
-        .terminate-btn:hover:not(:disabled) {
-            background: #a53333;
-        }
-
-        .terminate-btn:disabled {
-            opacity: 0.5;
-            cursor: not-allowed;
-        }
-
-        /* Account Age Info Box */
-        .age-info-box {
-            background: linear-gradient(135deg, #1e3a4a, #17212b);
-            border: 1px solid #4c9ce0;
-            border-radius: 12px;
-            padding: 16px;
-            margin: 16px 0;
-            display: flex;
-            align-items: center;
-            gap: 12px;
-        }
-
-        .age-icon {
-            font-size: 2rem;
-        }
-
-        .age-details h4 {
-            color: #6ab2f2;
-            margin-bottom: 4px;
-            font-size: 0.95rem;
-        }
-
-        .age-details p {
-            color: #8e9fad;
-            font-size: 0.85rem;
-        }
-
-        .age-details .age-year {
-            color: #4c9ce0;
-            font-weight: 600;
-            font-size: 1.1rem;
-        }
-
-        .age-stats {
-            display: flex;
-            gap: 15px;
-            margin-top: 8px;
-            flex-wrap: wrap;
-        }
-
-        .age-stat {
-            background: #242f3d;
-            padding: 8px 12px;
-            border-radius: 8px;
-            text-align: center;
-            min-width: 60px;
-        }
-
-        .age-stat-value {
-            font-size: 1.2rem;
-            font-weight: 600;
-            color: #6ab2f2;
-        }
-
-        .age-stat-label {
-            font-size: 0.7rem;
-            color: #8e9fad;
-            text-transform: uppercase;
-        }
-
-        .info-message {
-            background: #1e3a4a;
-            border: 1px solid #4c9ce0;
-            border-radius: 12px;
-            padding: 16px;
-            margin: 20px 0;
-            color: #8e9fad;
-            display: flex;
-            align-items: center;
-            gap: 12px;
-        }
-
-        .info-message.warning {
-            background: #4a2b2b;
-            border-color: #e04c4c;
-        }
-
-        .info-icon {
-            font-size: 1.5rem;
-        }
-
-        .loading {
-            text-align: center;
-            padding: 40px;
-            color: #8e9fad;
-        }
-
-        .empty-state {
-            text-align: center;
-            padding: 40px;
-            color: #8e9fad;
-            background: #242f3d;
-            border-radius: 12px;
-        }
-
-        .refresh-age-btn {
+        .action-btn {
             background: #2b3945;
-            color: #6ab2f2;
+            color: #fff;
             border: none;
-            padding: 6px 12px;
+            padding: 8px 14px;
             border-radius: 20px;
             font-size: 0.8rem;
             cursor: pointer;
-            transition: all 0.2s;
-            display: inline-flex;
-            align-items: center;
-            gap: 4px;
+            transition: 0.2s;
+            white-space: nowrap;
         }
 
-        .refresh-age-btn:hover {
+        .action-btn:hover {
             background: #3a4a5a;
         }
 
-        .refresh-age-btn:disabled {
-            opacity: 0.5;
-            cursor: not-allowed;
+        .action-btn.danger {
+            background: rgba(255, 68, 68, 0.2);
+            color: #ff6b6b;
+        }
+
+        .action-btn.danger:hover {
+            background: rgba(255, 68, 68, 0.4);
+        }
+
+        .action-btn.success {
+            background: rgba(32, 178, 170, 0.2);
+            color: #20b2aa;
+        }
+
+        .action-btn.success:hover {
+            background: rgba(32, 178, 170, 0.4);
+        }
+
+        .refresh-bar {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 16px;
+        }
+
+        .refresh-btn {
+            background: #2b3945;
+            color: #6ab2f2;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 20px;
+            cursor: pointer;
+            font-size: 0.9rem;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .refresh-btn:hover {
+            background: #3a4a5a;
+        }
+
+        .refresh-btn.refreshing {
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            from { transform: rotate(0deg); }
+            to { transform: rotate(360deg); }
         }
 
         .toast {
@@ -462,558 +270,372 @@
         }
 
         .toast.success {
-            border-left: 4px solid #4c9ce0;
+            border-left: 4px solid #20b2aa;
         }
 
         .toast.error {
-            border-left: 4px solid #e04c4c;
+            border-left: 4px solid #ff4444;
         }
 
-        .last-active {
-            color: #4c9ce0;
+        .empty-state {
+            text-align: center;
+            padding: 40px;
+            color: #8e9fad;
+            font-size: 1rem;
         }
 
-        @media (max-width: 600px) {
-            .device-item {
-                flex-direction: column;
-                gap: 15px;
-            }
-            
-            .device-actions {
-                width: 100%;
-            }
-            
-            .terminate-btn {
-                width: 100%;
-            }
+        /* Modal */
+        .modal-overlay {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0,0,0,0.8);
+            z-index: 1001;
+            align-items: center;
+            justify-content: center;
+        }
 
-            .account-grid {
-                grid-template-columns: 1fr;
-            }
+        .modal-overlay.show {
+            display: flex;
+        }
+
+        .modal-box {
+            background: #17212b;
+            border-radius: 16px;
+            padding: 24px;
+            max-width: 400px;
+            width: 90%;
+            border: 1px solid #2b3945;
+        }
+
+        .modal-title {
+            font-size: 1.2rem;
+            font-weight: 600;
+            margin-bottom: 12px;
+        }
+
+        .modal-body {
+            color: #8e9fad;
+            margin-bottom: 20px;
+            font-size: 0.9rem;
+            line-height: 1.5;
+        }
+
+        .modal-actions {
+            display: flex;
+            gap: 12px;
+            justify-content: flex-end;
+        }
+
+        .modal-btn {
+            padding: 10px 20px;
+            border-radius: 30px;
+            border: none;
+            cursor: pointer;
+            font-size: 0.9rem;
+            font-weight: 500;
+        }
+
+        .modal-btn.cancel {
+            background: #2b3945;
+            color: #fff;
+        }
+
+        .modal-btn.confirm {
+            background: #8e2b2b;
+            color: #fff;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #8e9fad;
+        }
+
+        .spinner {
+            display: inline-block;
+            width: 24px;
+            height: 24px;
+            border: 3px solid rgba(255,255,255,0.2);
+            border-radius: 50%;
+            border-top-color: #4c9ce0;
+            animation: spin 0.8s linear infinite;
+            margin-right: 8px;
+            vertical-align: middle;
         }
     </style>
 </head>
 <body>
     <div class="container">
-        <div class="header">
-            <div>
-                <h1>🔐 Device Manager</h1>
-                <p>Manage active sessions & view account age for your Telegram accounts</p>
-            </div>
-            <div class="nav-buttons">
-                <a href="/dashboard" class="nav-btn">📱 Dashboard</a>
-                <a href="/dash" class="nav-btn">⚙️ Account Manager</a>
-                <a href="/auto-add" class="nav-btn">👥 Auto-Add</a>
+        <div class="page-header">
+            <span class="page-title">📱 Device List</span>
+            <div style="display: flex; gap: 8px;">
+                <a href="/dashboard" class="back-btn">💬 Chats</a>
+                <a href="/auto-add" class="back-btn">⚙️ Settings</a>
             </div>
         </div>
 
-        <div class="account-selector">
-            <h3>Select Account</h3>
-            <div class="account-grid" id="accountList">
-                <div class="loading">Loading accounts...</div>
+        <!-- Stats -->
+        <div class="stats-bar" id="statsBar">
+            <div class="stat-card">
+                <div class="stat-value" id="totalDevices">0</div>
+                <div class="stat-label">Total Devices</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="activeDevices">0</div>
+                <div class="stat-label">Active</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="runningWorkers">0</div>
+                <div class="stat-label">Auto-Add Running</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="todayAdded">0</div>
+                <div class="stat-label">Today Added</div>
             </div>
         </div>
 
-        <div id="infoMessage" class="info-message">
-            <span class="info-icon">ℹ️</span>
-            <span>Select an account to view its details, age, and manage active sessions</span>
+        <!-- Refresh -->
+        <div class="refresh-bar">
+            <span style="color: #8e9fad; font-size: 0.85rem;" id="lastUpdated">Loading...</span>
+            <button class="refresh-btn" id="refreshBtn" onclick="loadDevices()">
+                <span id="refreshIcon">↻</span> Refresh
+            </button>
         </div>
 
-        <!-- Account Age Display -->
-        <div id="accountAgeBox" style="display: none;">
-            <div class="age-info-box" id="ageInfoBox">
-                <span class="age-icon">📅</span>
-                <div class="age-details">
-                    <h4>Account Information</h4>
-                    <p id="accountAgeDisplay">Loading age information...</p>
-                    <div class="age-stats" id="ageStats">
-                        <!-- Dynamically filled -->
-                    </div>
-                </div>
-                <button class="refresh-age-btn" id="refreshAgeBtn" onclick="refreshAccountAge()" style="margin-left: auto;">
-                    🔄 Refresh
-                </button>
-            </div>
+        <!-- Device List -->
+        <div id="deviceList">
+            <div class="loading"><span class="spinner"></span> Loading devices...</div>
         </div>
+    </div>
 
-        <div class="devices-section" id="devicesSection" style="display: none;">
-            <div class="section-header">
-                <h2>📱 Active Sessions</h2>
-                <button class="terminate-all-btn" id="terminateAllBtn" onclick="terminateAllSessions()">
-                    ⚡ Terminate All Other Sessions
-                </button>
-            </div>
-
-            <div id="devicesLoading" class="loading" style="display: none;">
-                Loading sessions...
-            </div>
-
-            <div id="devicesList" class="devices-list"></div>
-
-            <div id="warningMessage" class="info-message warning" style="display: none;">
-                <span class="info-icon">⚠️</span>
-                <span>You cannot terminate sessions within 24 hours of logging in</span>
+    <!-- Confirm Modal -->
+    <div class="modal-overlay" id="confirmModal">
+        <div class="modal-box">
+            <div class="modal-title" id="modalTitle">Confirm Action</div>
+            <div class="modal-body" id="modalBody">Are you sure?</div>
+            <div class="modal-actions">
+                <button class="modal-btn cancel" onclick="closeModal()">Cancel</button>
+                <button class="modal-btn confirm" id="modalConfirmBtn" onclick="executeAction()">Confirm</button>
             </div>
         </div>
     </div>
 
+    <!-- Toast -->
     <div class="toast" id="toast"></div>
 
-    <script>
-        let accounts = [];
-        let selectedAccount = null;
-        let currentDevices = [];
+<script>
+    var pendingAction = null;
+    var pendingAccountId = null;
 
-        const toast = document.getElementById('toast');
-        const accountList = document.getElementById('accountList');
-        const infoMessage = document.getElementById('infoMessage');
-        const accountAgeBox = document.getElementById('accountAgeBox');
-        const devicesSection = document.getElementById('devicesSection');
-        const devicesList = document.getElementById('devicesList');
-        const devicesLoading = document.getElementById('devicesLoading');
-        const warningMessage = document.getElementById('warningMessage');
-        const terminateAllBtn = document.getElementById('terminateAllBtn');
-        const refreshAgeBtn = document.getElementById('refreshAgeBtn');
+    function showToast(msg, type) {
+        type = type || 'success';
+        var t = document.getElementById('toast');
+        t.textContent = msg;
+        t.className = 'toast show ' + type;
+        setTimeout(function() { t.classList.remove('show'); }, 3000);
+    }
 
-        function showToast(message, type = 'success') {
-            toast.textContent = message;
-            toast.className = `toast show ${type}`;
-            setTimeout(() => {
-                toast.classList.remove('show');
-            }, 3000);
+    function showModal(title, body, action, accountId) {
+        document.getElementById('modalTitle').textContent = title;
+        document.getElementById('modalBody').textContent = body;
+        pendingAction = action;
+        pendingAccountId = accountId;
+        document.getElementById('confirmModal').classList.add('show');
+    }
+
+    function closeModal() {
+        document.getElementById('confirmModal').classList.remove('show');
+        pendingAction = null;
+        pendingAccountId = null;
+    }
+
+    async function executeAction() {
+        if (!pendingAction || !pendingAccountId) return;
+        closeModal();
+        
+        if (pendingAction === 'terminate') {
+            await terminateDevice(pendingAccountId);
+        } else if (pendingAction === 'toggle') {
+            await toggleAutoAdd(pendingAccountId);
         }
+    }
 
-        function escapeHtml(text) {
-            if (!text) return '';
-            const div = document.createElement('div');
-            div.textContent = text;
-            return div.innerHTML;
-        }
-
-        function formatDate(timestamp) {
-            if (!timestamp) return 'Unknown';
-            const date = new Date(timestamp * 1000);
-            const now = new Date();
-            const diffMs = now - date;
-            const diffMins = Math.floor(diffMs / 60000);
-            const diffHours = Math.floor(diffMins / 60);
-            const diffDays = Math.floor(diffHours / 24);
-
-            if (diffMins < 1) return 'Just now';
-            if (diffMins < 60) return `${diffMins} minutes ago`;
-            if (diffHours < 24) return `${diffHours} hours ago`;
-            if (diffDays < 7) return `${diffDays} days ago`;
-            return date.toLocaleDateString();
-        }
-
-        async function loadAccounts() {
-            try {
-                const res = await fetch('/api/accounts');
-                const data = await res.json();
-                
-                if (data.success) {
-                    accounts = data.accounts || [];
-                    displayAccounts();
-                } else {
-                    showToast('Failed to load accounts', 'error');
-                }
-            } catch (err) {
-                console.error('Error loading accounts:', err);
-                showToast('Error loading accounts', 'error');
-            }
-        }
-
-        function getAccountAgeClass(ageData) {
-            if (!ageData || !ageData.year_joined) return '';
-            const yearJoined = ageData.year_joined;
-            const currentYear = new Date().getFullYear();
-            const ageYears = currentYear - yearJoined;
+    async function loadDevices() {
+        var refreshIcon = document.getElementById('refreshIcon');
+        var refreshBtn = document.getElementById('refreshBtn');
+        refreshIcon.classList.add('refreshing');
+        refreshBtn.disabled = true;
+        
+        try {
+            // Get accounts
+            var accRes = await fetch('/api/accounts');
+            var accData = await accRes.json();
             
-            if (ageYears >= 3) return 'older';
-            if (ageYears < 1) return 'newer';
-            return '';
-        }
-
-        function getAccountAgeIcon(ageData) {
-            if (!ageData || !ageData.year_joined) return '📅';
-            const yearJoined = ageData.year_joined;
-            const currentYear = new Date().getFullYear();
-            const ageYears = currentYear - yearJoined;
+            // Get stats
+            var statsRes = await fetch('/api/auto-add-stats');
+            var statsData = await statsRes.json();
             
-            if (ageYears >= 5) return '🏆';
-            if (ageYears >= 3) return '⭐';
-            if (ageYears >= 1) return '📅';
-            return '🆕';
-        }
-
-        function formatAccountAge(ageData) {
-            if (!ageData) return 'Unknown';
+            // Get health
+            var healthRes = await fetch('/api/health');
+            var healthData = await healthRes.json();
             
-            if (ageData.age_display && ageData.age_display !== 'Unknown account age') {
-                return ageData.age_display;
-            }
-            
-            if (ageData.year_joined) {
-                return `Joined ${ageData.year_joined}`;
-            }
-            
-            return 'Age information not available';
-        }
-
-        function displayAccounts() {
-            if (!accounts.length) {
-                accountList.innerHTML = `
-                    <div class="empty-state">
-                        No accounts found.<br>
-                        <a href="/login" style="color:#6ab2f2;">Add an account</a> to manage sessions.
-                    </div>
-                `;
-                return;
-            }
-
-            let html = '';
-            accounts.forEach(acc => {
-                const initial = (acc.name || '?').charAt(0).toUpperCase();
-                const isSelected = selectedAccount && selectedAccount.id === acc.id;
-                const autoAddBadge = acc.auto_add_enabled !== false ? 
-                    '<span style="background:#1e4a2b; font-size:0.65rem; padding:2px 6px; border-radius:30px; margin-left:5px;">🤖 Auto-Add</span>' : '';
-                
-                // Account age badge
-                const ageData = acc.account_age;
-                let ageBadge = '';
-                if (ageData && ageData.age_display && ageData.age_display !== 'Unknown account age') {
-                    const ageClass = getAccountAgeClass(ageData);
-                    const ageIcon = getAccountAgeIcon(ageData);
-                    ageBadge = `
-                        <span class="account-age-badge ${ageClass}">
-                            <span class="account-age-icon">${ageIcon}</span>
-                            ${escapeHtml(formatAccountAge(ageData))}
-                        </span>
-                    `;
-                } else if (ageData && ageData.year_joined) {
-                    const ageClass = getAccountAgeClass(ageData);
-                    const ageIcon = getAccountAgeIcon(ageData);
-                    ageBadge = `
-                        <span class="account-age-badge ${ageClass}">
-                            <span class="account-age-icon">${ageIcon}</span>
-                            Joined ${ageData.year_joined}
-                        </span>
-                    `;
-                }
-                
-                html += `
-                    <div class="account-card ${isSelected ? 'selected' : ''}" 
-                         onclick="selectAccount(${acc.id})">
-                        <div class="account-avatar">${escapeHtml(initial)}</div>
-                        <div class="account-info">
-                            <h4>${escapeHtml(acc.name || 'Unknown')} ${autoAddBadge}</h4>
-                            <p>${escapeHtml(acc.phone || '')}</p>
-                            ${ageBadge}
-                        </div>
-                    </div>
-                `;
-            });
-
-            accountList.innerHTML = html;
-        }
-
-        function displayAccountAge(ageData) {
-            const ageDetails = document.getElementById('accountAgeDisplay');
-            const ageStats = document.getElementById('ageStats');
-            
-            if (!ageData) {
-                ageDetails.innerHTML = 'Age information not available for this account.';
-                ageStats.innerHTML = '';
-                return;
-            }
-
-            let ageDisplay = '';
-            let statsHtml = '';
-
-            if (ageData.age_display && ageData.age_display !== 'Unknown account age') {
-                ageDisplay = `<span class="age-year">${escapeHtml(ageData.age_display)}</span>`;
-            } else if (ageData.year_joined) {
-                ageDisplay = `<span class="age-year">Joined in ${ageData.year_joined}</span>`;
+            if (accData.success) {
+                var accounts = accData.accounts || [];
+                renderDevices(accounts);
+                updateStats(accounts, statsData, healthData);
             } else {
-                ageDisplay = 'Age information not available';
-            }
-
-            // Build stats
-            const stats = [];
-            
-            if (ageData.year_joined) {
-                stats.push({
-                    value: ageData.year_joined,
-                    label: 'Year Joined'
-                });
+                document.getElementById('deviceList').innerHTML = '<div class="empty-state">Failed to load devices</div>';
             }
             
-            if (ageData.age_years !== null && ageData.age_years !== undefined) {
-                stats.push({
-                    value: ageData.age_years.toFixed(1),
-                    label: 'Years Old'
-                });
-            }
-            
-            if (ageData.age_days !== null && ageData.age_days !== undefined) {
-                stats.push({
-                    value: ageData.age_days.toLocaleString(),
-                    label: 'Days'
-                });
-            }
-            
-            if (ageData.method) {
-                stats.push({
-                    value: ageData.method.replace('_', ' '),
-                    label: 'Detection Method'
-                });
-            }
-
-            statsHtml = stats.map(stat => `
-                <div class="age-stat">
-                    <div class="age-stat-value">${escapeHtml(String(stat.value))}</div>
-                    <div class="age-stat-label">${escapeHtml(stat.label)}</div>
-                </div>
-            `).join('');
-
-            ageDetails.innerHTML = ageDisplay;
-            ageStats.innerHTML = statsHtml;
+            document.getElementById('lastUpdated').textContent = 'Updated: ' + new Date().toLocaleTimeString();
+        } catch (err) {
+            console.error('Load devices error:', err);
+            document.getElementById('deviceList').innerHTML = '<div class="empty-state">Connection error. Try again.</div>';
+        } finally {
+            refreshIcon.classList.remove('refreshing');
+            refreshBtn.disabled = false;
         }
+    }
 
-        async function selectAccount(accountId) {
-            const account = accounts.find(a => a.id === accountId);
-            if (!account) return;
+    function updateStats(accounts, statsData, healthData) {
+        document.getElementById('totalDevices').textContent = accounts.length;
+        
+        var activeCount = accounts.filter(function(a) { return a.active !== false; }).length;
+        document.getElementById('activeDevices').textContent = activeCount;
+        
+        var runningCount = accounts.filter(function(a) { return a.is_running; }).length;
+        document.getElementById('runningWorkers').textContent = runningCount;
+        
+        document.getElementById('todayAdded').textContent = (statsData && statsData.added_today) ? statsData.added_today : 0;
+    }
 
-            selectedAccount = account;
-            displayAccounts();
-
-            // Show account age
-            accountAgeBox.style.display = 'block';
+    function renderDevices(accounts) {
+        if (!accounts || accounts.length === 0) {
+            document.getElementById('deviceList').innerHTML = '<div class="empty-state">No devices connected. <a href="/login" style="color:#6ab2f2;">Add one</a></div>';
+            return;
+        }
+        
+        var html = '';
+        accounts.forEach(function(acc) {
+            var name = acc.name || 'Unknown';
+            var phone = acc.phone || '';
+            var initial = name.charAt(0).toUpperCase();
+            var isRunning = acc.is_running;
+            var isActive = acc.active !== false;
             
-            // Display age from account data if available, otherwise try to fetch
-            if (account.account_age) {
-                displayAccountAge(account.account_age);
+            var statusClass = 'status-active';
+            var statusText = 'Active';
+            var cardClass = 'active-device';
+            
+            if (!isActive) {
+                statusClass = 'status-dead';
+                statusText = 'Inactive';
+                cardClass = 'dead-device';
+            } else if (isRunning) {
+                statusClass = 'status-running';
+                statusText = 'Auto-Add ON';
             } else {
-                document.getElementById('accountAgeDisplay').innerHTML = 'Fetching age information...';
-                document.getElementById('ageStats').innerHTML = '';
-                await refreshAccountAge();
+                statusClass = 'status-paused';
+                statusText = 'Auto-Add OFF';
             }
-
-            // Show devices section
-            devicesSection.style.display = 'block';
-            devicesLoading.style.display = 'block';
-            devicesList.innerHTML = '';
-            warningMessage.style.display = 'none';
-            infoMessage.style.display = 'none';
-            terminateAllBtn.disabled = true;
-
-            await loadDevices(accountId);
-        }
-
-        async function refreshAccountAge() {
-            if (!selectedAccount) return;
             
-            refreshAgeBtn.disabled = true;
-            refreshAgeBtn.innerHTML = '🔄 Loading...';
+            var todayAdded = (acc.stats && acc.stats.today_added) ? acc.stats.today_added : 0;
+            var totalAdded = (acc.stats && acc.stats.total_added) ? acc.stats.total_added : 0;
             
-            try {
-                const res = await fetch('/api/account-age', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ accountId: selectedAccount.id })
-                });
-
-                const data = await res.json();
-                
-                if (data.success && data.account_age) {
-                    // Update the selected account with new age data
-                    selectedAccount.account_age = data.account_age;
-                    
-                    // Update accounts array
-                    const accIndex = accounts.findIndex(a => a.id === selectedAccount.id);
-                    if (accIndex !== -1) {
-                        accounts[accIndex].account_age = data.account_age;
-                    }
-                    
-                    displayAccountAge(data.account_age);
-                    displayAccounts(); // Refresh account list to show updated badges
-                    
-                    if (data.cached) {
-                        showToast('Account age loaded from cache');
-                    } else {
-                        showToast('Account age refreshed successfully');
-                    }
-                } else {
-                    showToast(data.error || 'Failed to get account age', 'error');
-                    document.getElementById('accountAgeDisplay').innerHTML = 
-                        'Could not determine account age. <button class="refresh-age-btn" onclick="refreshAccountAge()">Try Again</button>';
-                }
-            } catch (err) {
-                console.error('Error refreshing account age:', err);
-                showToast('Error fetching account age', 'error');
-            } finally {
-                refreshAgeBtn.disabled = false;
-                refreshAgeBtn.innerHTML = '🔄 Refresh';
-            }
-        }
-
-        async function loadDevices(accountId) {
-            try {
-                const res = await fetch('/api/get-sessions', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ accountId })
-                });
-
-                const data = await res.json();
-                
-                devicesLoading.style.display = 'none';
-
-                if (data.success) {
-                    currentDevices = data.sessions || [];
-                    
-                    // Update age if returned from API
-                    if (data.account_age) {
-                        selectedAccount.account_age = data.account_age;
-                        displayAccountAge(data.account_age);
-                    }
-                    
-                    displayDevices(data);
-                } else {
-                    if (data.error === 'fresh_reset_forbidden') {
-                        warningMessage.style.display = 'flex';
-                        devicesList.innerHTML = '';
-                    } else {
-                        showToast(data.error || 'Failed to load sessions', 'error');
-                    }
-                }
-            } catch (err) {
-                console.error('Error loading devices:', err);
-                devicesLoading.style.display = 'none';
-                showToast('Error loading sessions', 'error');
-            }
-        }
-
-        function displayDevices(data) {
-            const { sessions, current_hash } = data;
+            html += '<div class="device-card ' + cardClass + '">' +
+                '<div class="device-avatar ' + (isActive ? '' : 'dead') + '">' + escapeHtml(initial) + '</div>' +
+                '<div class="device-info">' +
+                '<div class="device-name">' + escapeHtml(name) + '</div>' +
+                '<div class="device-phone">📱 ' + escapeHtml(phone) + '</div>' +
+                '<div class="device-meta">📊 Today: ' + todayAdded + ' | Total: ' + totalAdded + '</div>' +
+                '</div>' +
+                '<div class="device-status ' + statusClass + '">' + statusText + '</div>' +
+                '<div class="device-actions">';
             
-            if (!sessions || sessions.length === 0) {
-                devicesList.innerHTML = '<div class="empty-state">No active sessions found</div>';
-                terminateAllBtn.disabled = true;
-                return;
+            // Toggle auto-add button
+            if (isActive) {
+                html += '<button class="action-btn success" onclick="showModal(\'Toggle Auto-Add\', \'' + 
+                    (isRunning ? 'Pause auto-add for ' + name + '?' : 'Start auto-add for ' + name + '?') + 
+                    '\', \'toggle\', ' + acc.id + ')">' + (isRunning ? '⏸ Pause' : '▶ Start') + '</button>';
             }
+            
+            // Terminate button
+            html += '<button class="action-btn danger" onclick="showModal(\'Terminate Device\', \'Are you sure you want to remove and logout ' + 
+                name + '? This will stop auto-add and remove the account.\', \'terminate\', ' + acc.id + ')">🗑 Remove</button>';
+            
+            html += '</div></div>';
+        });
+        
+        document.getElementById('deviceList').innerHTML = html;
+    }
 
-            const otherSessions = sessions.filter(s => s.hash !== current_hash);
-            terminateAllBtn.disabled = otherSessions.length === 0;
+    function escapeHtml(text) {
+        if (!text) return '';
+        var div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    }
 
-            let html = '';
-            sessions.forEach(session => {
-                const isCurrent = session.hash === current_hash;
-                const lastActive = formatDate(session.date_active);
-                
-                html += `
-                    <div class="device-item ${isCurrent ? 'current' : ''}">
-                        <div class="device-info">
-                            <div class="device-icon">${getDeviceIcon(session.device_model)}</div>
-                            <div class="device-details">
-                                <h4>
-                                    ${escapeHtml(session.device_model || 'Unknown Device')}
-                                    ${isCurrent ? '<span class="current-badge">Current</span>' : ''}
-                                </h4>
-                                <p>
-                                    <span>📱 ${escapeHtml(session.platform || 'Unknown')}</span>
-                                    <span>🌐 ${escapeHtml(session.ip || 'Unknown IP')}</span>
-                                    <span>📍 ${escapeHtml(session.country || 'Unknown')}</span>
-                                    <span class="last-active">🕐 Last active: ${lastActive}</span>
-                                </p>
-                            </div>
-                        </div>
-                        <div class="device-actions">
-                            ${!isCurrent ? `
-                                <button class="terminate-btn" onclick="terminateSession('${session.hash}')">
-                                    Terminate
-                                </button>
-                            ` : ''}
-                        </div>
-                    </div>
-                `;
+    async function terminateDevice(accountId) {
+        try {
+            var res = await fetch('/api/remove-account', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ accountId: accountId })
             });
-
-            devicesList.innerHTML = html;
-        }
-
-        function getDeviceIcon(device) {
-            if (!device) return '📱';
-            device = device.toLowerCase();
-            if (device.includes('iphone')) return '📱';
-            if (device.includes('ipad')) return '📱';
-            if (device.includes('android')) return '📱';
-            if (device.includes('windows')) return '💻';
-            if (device.includes('mac')) return '💻';
-            if (device.includes('linux')) return '🐧';
-            if (device.includes('web')) return '🌐';
-            return '📱';
-        }
-
-        async function terminateSession(hash) {
-            if (!selectedAccount) return;
             
-            if (!confirm('Are you sure you want to terminate this session?')) return;
-
-            try {
-                const res = await fetch('/api/terminate-session', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ 
-                        accountId: selectedAccount.id,
-                        hash: hash 
-                    })
-                });
-
-                const data = await res.json();
-
-                if (data.success) {
-                    showToast('Session terminated successfully');
-                    await loadDevices(selectedAccount.id);
-                } else {
-                    showToast(data.error || 'Failed to terminate session', 'error');
-                }
-            } catch (err) {
-                console.error('Error:', err);
-                showToast('Error terminating session', 'error');
-            }
-        }
-
-        async function terminateAllSessions() {
-            if (!selectedAccount) return;
+            var data = await res.json();
             
-            if (!confirm('This will terminate ALL other active sessions. Continue?')) return;
-
-            try {
-                const res = await fetch('/api/terminate-sessions', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ accountId: selectedAccount.id })
-                });
-
-                const data = await res.json();
-
-                if (data.success) {
-                    showToast(data.message || 'All other sessions terminated');
-                    await loadDevices(selectedAccount.id);
-                } else {
-                    if (data.error && data.error.includes('24 hours')) {
-                        warningMessage.style.display = 'flex';
-                    }
-                    showToast(data.error || 'Failed to terminate sessions', 'error');
-                }
-            } catch (err) {
-                console.error('Error:', err);
-                showToast('Error terminating sessions', 'error');
+            if (data.success) {
+                showToast('Device terminated: ' + data.message, 'success');
+                setTimeout(loadDevices, 500);
+            } else {
+                showToast('Failed: ' + (data.error || 'Unknown error'), 'error');
             }
+        } catch (err) {
+            console.error('Terminate error:', err);
+            showToast('Connection error', 'error');
         }
+    }
 
-        window.addEventListener('load', loadAccounts);
-    </script>
+    async function toggleAutoAdd(accountId) {
+        try {
+            var res = await fetch('/api/auto-add-settings', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ 
+                    accountId: accountId,
+                    enabled: true  // Will be toggled by server based on current state
+                })
+            });
+            
+            var data = await res.json();
+            
+            if (data.success) {
+                showToast('Settings updated', 'success');
+                setTimeout(loadDevices, 500);
+            } else {
+                showToast('Failed: ' + (data.error || 'Unknown error'), 'error');
+            }
+        } catch (err) {
+            console.error('Toggle error:', err);
+            showToast('Connection error', 'error');
+        }
+    }
+
+    // Load on page ready
+    window.addEventListener('load', function() {
+        loadDevices();
+        
+        // Auto-refresh every 30 seconds
+        setInterval(function() {
+            loadDevices();
+        }, 30000);
+    });
+</script>
 </body>
 </html>
