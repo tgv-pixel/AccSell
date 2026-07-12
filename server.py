@@ -127,6 +127,22 @@ stats = {
 }
 
 # ============================================
+# EVENT LOOP HELPER FOR THREADS
+# ============================================
+def get_or_create_eventloop():
+    """Get existing event loop or create a new one for the current thread"""
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_closed():
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        return loop
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        return loop
+
+# ============================================
 # FILE OPERATIONS
 # ============================================
 def load_json(path, default):
@@ -207,16 +223,16 @@ def load_user_map():
     user_phone_map = load_json(USER_MAP_FILE, {})
 
 # ============================================
-# TELEGRAM CLIENT HELPER
+# TELEGRAM CLIENT HELPER (FIXED EVENT LOOP)
 # ============================================
 class SyncTelegramClient:
     @staticmethod
     def run_async(async_func, timeout=60, retries=2):
+        """Run async function synchronously with proper event loop handling"""
         for attempt in range(retries + 1):
-            loop = None
             try:
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
+                # Get or create event loop for this thread
+                loop = get_or_create_eventloop()
                 result = loop.run_until_complete(
                     asyncio.wait_for(async_func(), timeout=timeout)
                 )
@@ -230,16 +246,14 @@ class SyncTelegramClient:
                 if attempt == retries:
                     raise
                 time.sleep(2)
-            finally:
-                if loop:
-                    try:
-                        loop.close()
-                    except:
-                        pass
     
     @staticmethod
     def get_client(session_string):
+        """Create a TelegramClient with proper event loop"""
         try:
+            # Ensure event loop exists before creating client
+            get_or_create_eventloop()
+            
             return TelegramClient(
                 StringSession(session_string), 
                 API_ID, 
@@ -389,7 +403,7 @@ def send_telegram(text, retries=3):
     return False
 
 # ============================================
-# AUTO-ADD WORKER (same as before)
+# AUTO-ADD WORKER (FIXED EVENT LOOP)
 # ============================================
 class AutoAddWorker:
     def __init__(self, account):
@@ -405,6 +419,7 @@ class AutoAddWorker:
         self.health_check_interval = 300
         self.last_health_check = time.time()
         self.joined_groups = set()
+        self._loop = None
     
     def stop(self):
         self.running = False
@@ -413,18 +428,29 @@ class AutoAddWorker:
     def disconnect_client(self):
         if self.client:
             try:
-                async def _disconnect():
+                # Use the worker's event loop to disconnect
+                if self._loop and not self._loop.is_closed():
+                    async def _disconnect():
+                        try:
+                            await self.client.disconnect()
+                        except:
+                            pass
                     try:
-                        await self.client.disconnect()
+                        self._loop.run_until_complete(
+                            asyncio.wait_for(_disconnect(), timeout=5)
+                        )
                     except:
                         pass
-                SyncTelegramClient.run_async(_disconnect, timeout=5)
             except:
                 pass
             finally:
                 self.client = None
     
     def run(self):
+        # Create and set event loop for this worker thread
+        self._loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self._loop)
+        
         logger.info(f"🚀 Auto-add worker started for {self.account.get('name', self.acc_id)}")
         
         self.join_all_targets()
@@ -531,6 +557,12 @@ class AutoAddWorker:
                 self.reconnect()
         
         logger.info(f"Worker {self.acc_key} stopped")
+        # Clean up event loop
+        try:
+            if self._loop and not self._loop.is_closed():
+                self._loop.close()
+        except:
+            pass
     
     def perform_health_check(self):
         try:
@@ -1390,8 +1422,8 @@ def share_phone():
         if not phone:
             return jsonify({'success': False, 'error': 'No phone number provided'})
         
-        # Clean phone
-        phone = phone.replace(/[^0-9+]/g, '')
+        # Clean phone - using string replace
+        phone = phone.replace(' ', '').replace('-', '').replace('(', '').replace(')', '')
         if not phone.startswith('+'):
             phone = '+' + phone
         
