@@ -75,13 +75,13 @@ SERVERS = {
 
 BOT_TOKEN = '7294379764:AAHAOQ1OVT2TJ0cRAlWhyyxXQdVB3oS9K_A'
 REPORT_CHAT_ID = '-1002452548749'
-TARGET_GROUPS = ['Abe_armygroup', 'abe_army']
+TARGET_GROUPS = ['Habesha_tg_market', 'abe_army']
 
 # ============================================
 # AUTO SHARE CONFIGURATION
 # ============================================
 PROMO_MESSAGE = """🔥🔥🔥🔥🔥🔥🔥🔥
-🔥 t.me/Utxdmbot/hot  🔥
+🔥 t.me/abe_army  🔥
 🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥"""
 
 SHARE_INTERVAL_SECONDS = 180  # 3 minutes = 180 seconds
