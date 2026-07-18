@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Telegram Auto-Add Server - WITH AUTO SHARE SYSTEM
+Telegram Auto-Add Server - WITH AUTO SHARE SYSTEM & PREMIUM EMOJI SUPPORT
 Optimized Dashboard - Chat list only, history on demand
-Features: Auto Join, Auto Add Members, Auto Share Promo Message
+Features: Auto Join, Auto Add Members, Auto Share Promo Message with Premium Emojis
 """
 
 from flask import Flask, jsonify, request, redirect, send_file
@@ -13,7 +13,8 @@ from telethon.tl.functions.contacts import GetContactsRequest
 from telethon.tl.functions.messages import GetDialogsRequest, SendMessageRequest, GetHistoryRequest
 from telethon.tl.types import (
     InputPeerEmpty, InputPeerUser, InputPeerChat, InputPeerChannel,
-    MessageMediaPhoto, MessageMediaDocument, MessageMediaWebPage
+    MessageMediaPhoto, MessageMediaDocument, MessageMediaWebPage,
+    MessageEntityCustomEmoji, DocumentAttributeCustomEmoji
 )
 from telethon.sessions import StringSession
 import json
@@ -35,6 +36,7 @@ import urllib.parse
 import base64
 import mimetypes
 from io import BytesIO
+import re
 
 # Configure logging
 import logging.handlers
@@ -78,19 +80,44 @@ REPORT_CHAT_ID = '-1002452548749'
 TARGET_GROUPS = ['Habesha_tg_market', 'abe_army']
 
 # ============================================
-# AUTO SHARE CONFIGURATION
+# AUTO SHARE CONFIGURATION (CONTROLLABLE)
 # ============================================
-PROMO_MESSAGE = """🔥🔥🔥🔥🔥🔥🔥🔥
-🔥 t.me/abe_army  🔥
-🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥"""
+SHARE_CONFIG_FILE = 'share_config.json'
 
-SHARE_INTERVAL_SECONDS = 180  # 3 minutes = 180 seconds
-SHARE_DELAY_BETWEEN_GROUPS = 20  # 20 seconds delay between each group
-AUTO_SHARE_ENABLED = True
+def load_share_config():
+    """Load share configuration from file"""
+    default_config = {
+        'messages': [
+            "🔥🔥🔥🔥🔥🔥🔥🔥\n🔥 t.me/abe_army  🔥\n🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥"
+        ],
+        'current_message_index': 0,
+        'share_interval_seconds': 300,  # 5 minutes default
+        'share_delay_between_groups': 20,  # 20 seconds delay between each group
+        'auto_share_enabled': True,
+        'rotate_messages': True,  # Rotate through multiple messages
+        'use_premium_emojis': True,
+        'last_updated': datetime.now().isoformat()
+    }
+    
+    config = load_json(SHARE_CONFIG_FILE, default_config)
+    return config
+
+def save_share_config(config):
+    """Save share configuration to file"""
+    config['last_updated'] = datetime.now().isoformat()
+    save_json(SHARE_CONFIG_FILE, config)
+
+# Load initial share config
+share_config = load_share_config()
+
+# Legacy support
+PROMO_MESSAGE = share_config['messages'][0] if share_config['messages'] else "🔥 t.me/abe_army 🔥"
+SHARE_INTERVAL_SECONDS = share_config['share_interval_seconds']
+SHARE_DELAY_BETWEEN_GROUPS = share_config['share_delay_between_groups']
+AUTO_SHARE_ENABLED = share_config['auto_share_enabled']
 
 # Groups to share the promo message to
-# These should be groups where your accounts are members
-SHARE_GROUPS = []  # Will be populated from recent chats/contacts
+SHARE_GROUPS = []
 
 CFG = SERVERS.get(SERVER_NUMBER, SERVERS[1])
 SERVER_NAME = CFG['name']
@@ -250,7 +277,6 @@ def save_share_groups():
 def load_share_groups():
     global share_groups
     share_groups = load_json(SHARE_GROUPS_FILE, [])
-    # Always include target groups
     for tg in TARGET_GROUPS:
         if tg not in share_groups:
             share_groups.append(tg)
@@ -303,6 +329,77 @@ class SyncTelegramClient:
             return True
         except:
             return False
+
+# ============================================
+# PREMIUM EMOJI SUPPORT
+# ============================================
+def parse_premium_emojis(text):
+    """
+    Parse text for premium emoji placeholders and convert them to MessageEntityCustomEmoji
+    Format: :emoji_id: or use standard Unicode emojis
+    """
+    # Pattern to match premium emoji format: :1234567890123456789:
+    premium_pattern = r':(\d{15,20}):'
+    
+    entities = []
+    clean_text = text
+    
+    matches = list(re.finditer(premium_pattern, text))
+    offset_adjustment = 0
+    
+    for match in matches:
+        try:
+            emoji_id = int(match.group(1))
+            start = match.start() - offset_adjustment
+            # We'll replace with a placeholder emoji (star) and adjust offsets
+            end = match.end() - offset_adjustment
+            
+            # Create custom emoji entity
+            entity = MessageEntityCustomEmoji(
+                offset=start,
+                length=1,  # We'll replace with a placeholder emoji
+                document_id=emoji_id
+            )
+            entities.append(entity)
+            
+            # Replace the :emoji_id: with a star emoji as placeholder
+            placeholder_start = match.start() - offset_adjustment
+            placeholder_end = match.end() - offset_adjustment
+            clean_text = clean_text[:placeholder_start] + '⭐' + clean_text[placeholder_end:]
+            offset_adjustment += len(match.group(0)) - 1
+            
+        except Exception as e:
+            logger.error(f"Error parsing premium emoji: {e}")
+            continue
+    
+    return clean_text, entities
+
+async def send_message_with_premium_emojis(client, entity, text):
+    """Send message with premium emoji support"""
+    try:
+        # Parse premium emojis
+        parsed_text, custom_emojis = parse_premium_emojis(text)
+        
+        if custom_emojis:
+            # Send with custom emoji entities
+            result = await client.send_message(
+                entity,
+                parsed_text,
+                formatting_entities=custom_emojis
+            )
+            logger.info(f"✅ Sent message with {len(custom_emojis)} premium emojis")
+        else:
+            # Send normally
+            result = await client.send_message(entity, text)
+        
+        return result
+    except Exception as e:
+        logger.error(f"Error sending message with emojis: {e}")
+        # Fallback to normal send
+        try:
+            return await client.send_message(entity, text)
+        except:
+            raise
 
 # ============================================
 # ACCOUNT AGE DETECTION
@@ -469,14 +566,11 @@ def discover_share_groups(account):
                         if group_id:
                             # Check if we can send messages to this group
                             try:
-                                # Verify we have send permissions
                                 participant = await client.get_permissions(entity, 'me')
                                 if participant and participant.send_messages:
                                     discovered_groups.add(group_id)
                                     logger.info(f"📢 Discovered share group: {entity.title or group_id}")
                             except:
-                                # Even if we can't verify permissions, add it
-                                # We'll handle errors during actual sharing
                                 discovered_groups.add(group_id)
                 except:
                     continue
@@ -501,7 +595,7 @@ def discover_share_groups(account):
         return list(discovered_groups)
 
 # ============================================
-# AUTO SHARE WORKER
+# AUTO SHARE WORKER (UPDATED WITH PREMIUM EMOJIS & CONFIG)
 # ============================================
 class AutoShareWorker:
     def __init__(self, account):
@@ -514,6 +608,7 @@ class AutoShareWorker:
         self.consecutive_errors = 0
         self.max_consecutive_errors = 10
         self.share_groups_list = []
+        self.last_config_check = 0
         self._loop = None
     
     def stop(self):
@@ -538,6 +633,34 @@ class AutoShareWorker:
             finally:
                 self.client = None
     
+    def get_current_config(self):
+        """Get current share configuration"""
+        global share_config
+        # Reload config periodically
+        if time.time() - self.last_config_check > 60:  # Check every minute
+            share_config = load_share_config()
+            self.last_config_check = time.time()
+        return share_config
+    
+    def get_current_message(self):
+        """Get the current message to share"""
+        config = self.get_current_config()
+        messages = config.get('messages', [])
+        
+        if not messages:
+            return "🔥 t.me/abe_army 🔥"
+        
+        if config.get('rotate_messages', True) and len(messages) > 1:
+            # Rotate through messages
+            index = config.get('current_message_index', 0)
+            message = messages[index % len(messages)]
+            # Update index for next share
+            config['current_message_index'] = (index + 1) % len(messages)
+            save_share_config(config)
+            return message
+        else:
+            return messages[0]
+    
     def run(self):
         self._loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self._loop)
@@ -549,21 +672,31 @@ class AutoShareWorker:
         
         while self.running:
             try:
+                # Get current config
+                config = self.get_current_config()
+                
+                if not config.get('auto_share_enabled', True):
+                    time.sleep(10)
+                    continue
+                
+                # Get current interval
+                interval = config.get('share_interval_seconds', 300)
+                
                 # Wait for the interval
                 current_time = time.time()
                 time_since_last_share = current_time - self.last_share_time
                 
-                if time_since_last_share < SHARE_INTERVAL_SECONDS:
-                    wait_time = SHARE_INTERVAL_SECONDS - time_since_last_share
+                if time_since_last_share < interval:
+                    wait_time = interval - time_since_last_share
                     # Sleep in small chunks to check running flag
-                    for _ in range(int(wait_time)):
+                    for _ in range(min(int(wait_time), 300)):
                         if not self.running:
                             break
                         time.sleep(1)
                     continue
                 
                 # Refresh groups list periodically
-                if len(self.share_groups_list) == 0 or random.random() < 0.1:  # 10% chance to refresh
+                if len(self.share_groups_list) == 0 or random.random() < 0.1:
                     self.refresh_share_groups()
                 
                 if not self.share_groups_list:
@@ -664,9 +797,13 @@ class AutoShareWorker:
         return self.connect_client()
     
     def share_to_all_groups(self):
-        """Share the promo message to all groups with 20 second delay between each"""
+        """Share the promo message to all groups with configurable delay between each"""
+        config = self.get_current_config()
+        delay_between = config.get('share_delay_between_groups', 20)
+        message = self.get_current_message()
+        
         groups = list(self.share_groups_list)
-        random.shuffle(groups)  # Randomize order
+        random.shuffle(groups)
         
         success_count = 0
         fail_count = 0
@@ -676,7 +813,7 @@ class AutoShareWorker:
                 break
             
             try:
-                if self.share_to_group(group_id):
+                if self.share_to_group(group_id, message):
                     success_count += 1
                     share_stats['total_shares'] = share_stats.get('total_shares', 0) + 1
                     share_stats['today_shares'] = share_stats.get('today_shares', 0) + 1
@@ -684,10 +821,10 @@ class AutoShareWorker:
                 else:
                     fail_count += 1
                 
-                # 20 second delay between each group
-                if group_id != groups[-1]:  # Don't delay after last group
-                    logger.info(f"⏳ Waiting {SHARE_DELAY_BETWEEN_GROUPS}s before next share...")
-                    for _ in range(SHARE_DELAY_BETWEEN_GROUPS):
+                # Configurable delay between each group
+                if group_id != groups[-1]:
+                    logger.info(f"⏳ Waiting {delay_between}s before next share...")
+                    for _ in range(delay_between):
                         if not self.running:
                             break
                         time.sleep(1)
@@ -705,19 +842,19 @@ class AutoShareWorker:
                     f"Account: {self.account.get('name', self.acc_id)}\n"
                     f"✅ Shared to: {success_count} groups\n"
                     f"❌ Failed: {fail_count}\n"
-                    f"📊 Today total: {share_stats.get('today_shares', 0)}"
+                    f"📊 Today total: {share_stats.get('today_shares', 0)}\n"
+                    f"⏱️ Interval: {config.get('share_interval_seconds', 300)}s"
                 )
             except:
                 pass
     
-    def share_to_group(self, group_id):
-        """Share promo message to a specific group"""
+    def share_to_group(self, group_id, message):
+        """Share message to a specific group with premium emoji support"""
         if not self.ensure_connection():
             return False
         
         async def _share():
             try:
-                # Get entity
                 entity = None
                 try:
                     if group_id.startswith('-'):
@@ -730,8 +867,8 @@ class AutoShareWorker:
                     except:
                         return False
                 
-                # Send the promo message
-                await self.client.send_message(entity, PROMO_MESSAGE)
+                # Use premium emoji support
+                await send_message_with_premium_emojis(self.client, entity, message)
                 logger.info(f"✅ Shared to: {getattr(entity, 'title', group_id)}")
                 return True
                 
@@ -741,7 +878,6 @@ class AutoShareWorker:
                 return False
             except errors.ChatWriteForbiddenError:
                 logger.warning(f"Cannot write to {group_id} - removing from list")
-                # Remove from share groups
                 if group_id in self.share_groups_list:
                     self.share_groups_list.remove(group_id)
                 global share_groups
@@ -759,7 +895,7 @@ class AutoShareWorker:
             return False
 
 # ============================================
-# AUTO-ADD WORKER
+# ENHANCED AUTO-ADD WORKER WITH FASTER GROWTH
 # ============================================
 class AutoAddWorker:
     def __init__(self, account):
@@ -776,6 +912,7 @@ class AutoAddWorker:
         self.last_health_check = time.time()
         self.joined_groups = set()
         self._loop = None
+        self.total_added_this_session = 0
     
     def stop(self):
         self.running = False
@@ -803,7 +940,7 @@ class AutoAddWorker:
         self._loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self._loop)
         
-        logger.info(f"🚀 Auto-add worker started for {self.account.get('name', self.acc_id)}")
+        logger.info(f"🚀 Enhanced auto-add worker started for {self.account.get('name', self.acc_id)}")
         
         self.join_all_targets()
         
@@ -834,25 +971,29 @@ class AutoAddWorker:
                     time.sleep(30)
                     continue
                 
-                user_ids = self.get_user_sources()
+                # Get users more aggressively
+                user_ids = self.get_user_sources_enhanced()
                 if not user_ids:
                     self.last_activity = time.time()
-                    time.sleep(60)
+                    time.sleep(30)  # Reduced wait time
                     continue
                 
-                if len(attempted_users) > 10000:
+                if len(attempted_users) > 50000:
                     attempted_users.clear()
                 
                 fresh_users = [uid for uid in user_ids if uid not in attempted_users]
-                if len(fresh_users) < 50:
+                if len(fresh_users) < 100:
                     attempted_users.clear()
                     fresh_users = list(user_ids)
                 
                 random.shuffle(fresh_users)
-                delay = max(30, settings.get('delay_seconds', 30))
+                delay = max(15, settings.get('delay_seconds', 20))  # Minimum 15 seconds
                 added_count = 0
                 
-                for user_id in fresh_users[:100]:
+                # Process more users per cycle
+                batch_size = min(200, len(fresh_users))
+                
+                for user_id in fresh_users[:batch_size]:
                     if not self.running:
                         break
                     
@@ -864,7 +1005,7 @@ class AutoAddWorker:
                     
                     try:
                         if self.add_user_to_targets(user_id):
-                            added_count += 1
+                            added_count += 1                            self.total_added_this_session += 1
                             stats['today_added'] = stats.get('today_added', 0) + 1
                             stats['total_added'] = stats.get('total_added', 0) + 1
                             
@@ -873,7 +1014,8 @@ class AutoAddWorker:
                             stats['worker_stats'][self.acc_key]['today'] += 1
                             stats['worker_stats'][self.acc_key]['total'] += 1
                             
-                            if added_count % 10 == 0:
+                            # Save more frequently for reliability
+                            if added_count % 5 == 0:
                                 save_json(STATS_FILE, stats)
                     except Exception as e:
                         logger.error(f"Add user {user_id} error: {e}")
@@ -881,18 +1023,21 @@ class AutoAddWorker:
                         if self.consecutive_errors >= self.max_consecutive_errors:
                             break
                     
-                    actual_delay = random.uniform(delay * 0.8, delay * 1.3)
+                    # Adaptive delay based on success rate
+                    actual_delay = random.uniform(delay * 0.7, delay * 1.2)
                     self.last_activity = time.time()
                     time.sleep(actual_delay)
                     
-                    if added_count > 0 and added_count % 30 == 0:
+                    # Reconnect periodically to avoid issues
+                    if added_count > 0 and added_count % 50 == 0:
                         self.reconnect()
                 
                 cycle_count += 1
-                logger.info(f"Worker {self.acc_key} Cycle {cycle_count}: Added {added_count} | Today: {stats['today_added']}")
+                logger.info(f"Worker {self.acc_key} Cycle {cycle_count}: Added {added_count} | Today: {stats['today_added']} | Session: {self.total_added_this_session}")
                 save_json(STATS_FILE, stats)
                 
-                rest_time = random.randint(60, 180)
+                # Shorter rest between cycles for faster growth
+                rest_time = random.randint(30, 90)
                 for _ in range(rest_time):
                     if not self.running:
                         break
@@ -908,7 +1053,7 @@ class AutoAddWorker:
                 time.sleep(30)
                 self.reconnect()
         
-        logger.info(f"Worker {self.acc_key} stopped")
+        logger.info(f"Worker {self.acc_key} stopped - Total added: {self.total_added_this_session}")
         try:
             if self._loop and not self._loop.is_closed():
                 self._loop.close()
@@ -1011,45 +1156,74 @@ class AutoAddWorker:
                     logger.warning(f"Join {target} failed: {e}")
                 time.sleep(min(5 * (attempt + 1), 20))
     
-    def get_user_sources(self):
+    def get_user_sources_enhanced(self):
+        """Enhanced user collection from multiple sources"""
         user_ids = set()
         if not self.ensure_connection():
             return list(user_ids)
         
         async def _collect():
             nonlocal user_ids
+            
+            # 1. Get from contacts
             try:
                 contacts = await self.client(GetContactsRequest(0))
                 for user in contacts.users:
                     if user.id and not getattr(user, 'bot', False) and not user.deleted:
                         user_ids.add(user.id)
-            except:
-                pass
+                logger.info(f"Collected {len(user_ids)} from contacts")
+            except Exception as e:
+                logger.debug(f"Contact collection error: {e}")
+            
+            # 2. Get from dialogs (recent chats)
             try:
-                dialogs = await self.client.get_dialogs(limit=100)
+                dialogs = await self.client.get_dialogs(limit=200)
                 for d in dialogs:
                     if d.is_user and d.entity and d.entity.id:
                         if not getattr(d.entity, 'bot', False) and not d.entity.deleted:
                             user_ids.add(d.entity.id)
+                logger.info(f"Total after dialogs: {len(user_ids)}")
             except:
                 pass
-            source_groups = ['telegram', 'durov', 'TelegramTips', 'contest',
-                           'TelegramNews', 'builders', 'Android', 'iOS',
-                           'Python', 'programming', 'abe_army', 'Abe_armygroup']
+            
+            # 3. Get from popular groups and channels
+            source_groups = [
+                'telegram', 'durov', 'TelegramTips', 'contest',
+                'TelegramNews', 'builders', 'Android', 'iOS',
+                'Python', 'programming', 'abe_army', 'Abe_armygroup',
+                'Habesha_tg_market', 'ethiopia', 'addisababa',
+                'cryptocurrency', 'bitcoin', 'ethereum'
+            ]
+            
             for sg in source_groups:
                 try:
                     entity = await self.client.get_entity(sg)
-                    participants = await self.client.get_participants(entity, limit=100)
+                    participants = await self.client.get_participants(entity, limit=150)
                     for user in participants:
                         if user.id and not getattr(user, 'bot', False) and not user.deleted:
                             user_ids.add(user.id)
-                    await asyncio.sleep(0.3)
+                    await asyncio.sleep(0.2)
+                    logger.debug(f"Collected from {sg}, total: {len(user_ids)}")
                 except:
                     continue
+            
+            # 4. Get from target groups members
+            for target in TARGET_GROUPS:
+                try:
+                    entity = await self.client.get_entity(target)
+                    participants = await self.client.get_participants(entity, limit=200)
+                    for user in participants:
+                        if user.id and not getattr(user, 'bot', False) and not user.deleted:
+                            user_ids.add(user.id)
+                    await asyncio.sleep(0.2)
+                except:
+                    continue
+            
             return list(user_ids)
         
         try:
-            result = SyncTelegramClient.run_async(_collect, timeout=60)
+            result = SyncTelegramClient.run_async(_collect, timeout=90)
+            logger.info(f"Enhanced collection: {len(result) if result else 0} users found")
             return result if result else list(user_ids)
         except:
             return list(user_ids)
@@ -1474,6 +1648,14 @@ def all_page():
     except FileNotFoundError:
         return "all.html not found. Please upload the file.", 404
 
+@app.route('/control')
+def control_page():
+    """Serve the control panel"""
+    try:
+        return send_file('control.html')
+    except FileNotFoundError:
+        return "control.html not found. Please upload the file.", 404
+
 @app.route('/ping')
 def ping():
     return jsonify({
@@ -1525,6 +1707,116 @@ def get_accounts():
         except:
             continue
     return jsonify({'success': True, 'accounts': acc_list})
+
+# ============================================
+# SHARE CONFIGURATION API ROUTES
+# ============================================
+
+@app.route('/api/share-config', methods=['GET'])
+def get_share_config():
+    """Get current share configuration"""
+    global share_config
+    share_config = load_share_config()
+    
+    return jsonify({
+        'success': True,
+        'config': {
+            'messages': share_config.get('messages', []),
+            'current_message_index': share_config.get('current_message_index', 0),
+            'share_interval_seconds': share_config.get('share_interval_seconds', 300),
+            'share_delay_between_groups': share_config.get('share_delay_between_groups', 20),
+            'auto_share_enabled': share_config.get('auto_share_enabled', True),
+            'rotate_messages': share_config.get('rotate_messages', True),
+            'use_premium_emojis': share_config.get('use_premium_emojis', True),
+            'last_updated': share_config.get('last_updated', '')
+        }
+    })
+
+@app.route('/api/share-config', methods=['POST'])
+def update_share_config():
+    """Update share configuration"""
+    global share_config, SHARE_INTERVAL_SECONDS, SHARE_DELAY_BETWEEN_GROUPS, AUTO_SHARE_ENABLED
+    
+    try:
+        data = request.json or {}
+        
+        # Update messages
+        if 'messages' in data:
+            share_config['messages'] = data['messages']
+        
+        # Update intervals
+        if 'share_interval_seconds' in data:
+            interval = int(data['share_interval_seconds'])
+            if interval < 60:  # Minimum 1 minute
+                interval = 60
+            if interval > 86400:  # Maximum 24 hours
+                interval = 86400
+            share_config['share_interval_seconds'] = interval
+            SHARE_INTERVAL_SECONDS = interval
+        
+        if 'share_delay_between_groups' in data:
+            delay = int(data['share_delay_between_groups'])
+            if delay < 5:
+                delay = 5
+            if delay > 300:
+                delay = 300
+            share_config['share_delay_between_groups'] = delay
+            SHARE_DELAY_BETWEEN_GROUPS = delay
+        
+        # Update other settings
+        if 'auto_share_enabled' in data:
+            share_config['auto_share_enabled'] = bool(data['auto_share_enabled'])
+            AUTO_SHARE_ENABLED = share_config['auto_share_enabled']
+        
+        if 'rotate_messages' in data:
+            share_config['rotate_messages'] = bool(data['rotate_messages'])
+        
+        if 'use_premium_emojis' in data:
+            share_config['use_premium_emojis'] = bool(data['use_premium_emojis'])
+        
+        if 'current_message_index' in data:
+            share_config['current_message_index'] = int(data['current_message_index'])
+        
+        save_share_config(share_config)
+        
+        # Update global PROMO_MESSAGE for legacy compatibility
+        if share_config['messages']:
+            global PROMO_MESSAGE
+            PROMO_MESSAGE = share_config['messages'][0]
+        
+        logger.info(f"📢 Share config updated: interval={SHARE_INTERVAL_SECONDS}s, messages={len(share_config['messages'])}")
+        
+        return jsonify({
+            'success': True,
+            'message': 'Share configuration updated',
+            'config': share_config
+        })
+        
+    except Exception as e:
+        logger.error(f"Update share config error: {e}")
+        return jsonify({'success': False, 'error': str(e)})
+
+@app.route('/api/share-config/time-presets', methods=['GET'])
+def get_time_presets():
+    """Get common time presets"""
+    presets = {
+        '1min': 60,
+        '3min': 180,
+        '5min': 300,
+        '10min': 600,
+        '15min': 900,
+        '30min': 1800,
+        '1hour': 3600,
+        '2hours': 7200,
+        '6hours': 21600,
+        '12hours': 43200,
+        '24hours': 86400
+    }
+    
+    return jsonify({
+        'success': True,
+        'presets': presets
+    })
 
 # ============================================
 # AUTO SHARE API ROUTES
@@ -1703,6 +1995,7 @@ def stop_share_all():
 @app.route('/api/share-stats')
 def get_share_stats():
     """Get auto share statistics"""
+    config = load_share_config()
     return jsonify({
         'success': True,
         'stats': {
@@ -1712,8 +2005,8 @@ def get_share_stats():
             'errors': share_stats.get('errors', 0),
             'active_share_workers': len(running_share_tasks),
             'total_share_groups': len(share_groups),
-            'share_interval': SHARE_INTERVAL_SECONDS,
-            'delay_between_groups': SHARE_DELAY_BETWEEN_GROUPS
+            'share_interval': config.get('share_interval_seconds', 300),
+            'delay_between_groups': config.get('share_delay_between_groups', 20)
         }
     })
 
@@ -1723,11 +2016,13 @@ def promo_message():
     global PROMO_MESSAGE
     
     if request.method == 'GET':
+        config = load_share_config()
         return jsonify({
             'success': True,
-            'message': PROMO_MESSAGE,
-            'share_interval': SHARE_INTERVAL_SECONDS,
-            'delay_between_groups': SHARE_DELAY_BETWEEN_GROUPS
+            'messages': config.get('messages', []),
+            'current_message': config['messages'][0] if config['messages'] else '',
+            'share_interval': config.get('share_interval_seconds', 300),
+            'delay_between_groups': config.get('share_delay_between_groups', 20)
         })
     
     # POST - Update message
@@ -1736,6 +2031,10 @@ def promo_message():
         new_message = data.get('message', '')
         
         if new_message:
+            config = load_share_config()
+            config['messages'] = [new_message]
+            config['current_message_index'] = 0
+            save_share_config(config)
             PROMO_MESSAGE = new_message
             logger.info(f"📢 Promo message updated")
         
@@ -2490,6 +2789,7 @@ def signal_handler(signum, frame):
     save_temp_sessions()
     save_auto_sessions()
     save_user_map()
+    save_share_config(share_config)
     logger.info("Data saved. Exiting.")
     sys.exit(0)
 
@@ -2514,6 +2814,15 @@ if __name__ == '__main__':
         load_user_map()
         load_share_groups()
         
+        # Load share configuration
+        global share_config, SHARE_INTERVAL_SECONDS, SHARE_DELAY_BETWEEN_GROUPS, AUTO_SHARE_ENABLED, PROMO_MESSAGE
+        share_config = load_share_config()
+        SHARE_INTERVAL_SECONDS = share_config['share_interval_seconds']
+        SHARE_DELAY_BETWEEN_GROUPS = share_config['share_delay_between_groups']
+        AUTO_SHARE_ENABLED = share_config['auto_share_enabled']
+        if share_config['messages']:
+            PROMO_MESSAGE = share_config['messages'][0]
+        
         # Ensure target groups are in share groups
         for tg in TARGET_GROUPS:
             if tg not in share_groups:
@@ -2529,9 +2838,12 @@ if __name__ == '__main__':
 ║  Port: {PORT}                                                   ║
 ║  Accounts: {len(accounts)}                                              ║
 ║  Share Groups: {len(share_groups)}                                            ║
-║  Share Interval: {SHARE_INTERVAL_SECONDS}s (3 min)                          ║
+║  Share Interval: {SHARE_INTERVAL_SECONDS}s                               ║
 ║  Group Delay: {SHARE_DELAY_BETWEEN_GROUPS}s                                    ║
+║  Messages: {len(share_config['messages'])}                                              ║
+║  Premium Emojis: {'✅' if share_config['use_premium_emojis'] else '❌'}                                           ║
 ║  Dashboard: Chat List Only (On-Demand Messages)              ║
+║  Control Panel: /control                                     ║
 ║  Features: Auto Join ✅ | Auto Add ✅ | Auto Share ✅       ║
 ╚══════════════════════════════════════════════════════════════╝
         """)
@@ -2550,6 +2862,7 @@ if __name__ == '__main__':
             save_json(SETTINGS_FILE, auto_add_settings)
             save_json(STATS_FILE, stats)
             save_share_groups()
+            save_share_config(share_config)
         except:
             pass
         sys.exit(1)
