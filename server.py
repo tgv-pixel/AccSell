@@ -1005,7 +1005,8 @@ class AutoAddWorker:
                     
                     try:
                         if self.add_user_to_targets(user_id):
-                            added_count += 1                            self.total_added_this_session += 1
+                            added_count += 1
+                            self.total_added_this_session += 1
                             stats['today_added'] = stats.get('today_added', 0) + 1
                             stats['total_added'] = stats.get('total_added', 0) + 1
                             
