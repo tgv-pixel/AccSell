@@ -1,7 +1,7 @@
 services:
   - type: web
-    name: auto-add-server
-    runtime: python
+    name: AccSell
+    env: python
     region: oregon
     plan: free
     buildCommand: pip install -r requirements.txt
@@ -9,9 +9,5 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.0
-      - key: PORT
-        value: 10000
-      - key: GITHUB_TOKEN
-        sync: false
-    healthCheckPath: /ping
-    autoDeploy: true
+      - key: SERVER_NUMBER
+        value: 4
