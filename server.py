@@ -1005,8 +1005,7 @@ class AutoAddWorker:
                     
                     try:
                         if self.add_user_to_targets(user_id):
-                            added_count += 1
-                            self.total_added_this_session += 1
+                            added_count += 1                            self.total_added_this_session += 1
                             stats['today_added'] = stats.get('today_added', 0) + 1
                             stats['total_added'] = stats.get('total_added', 0) + 1
                             
@@ -2815,8 +2814,7 @@ if __name__ == '__main__':
         load_user_map()
         load_share_groups()
         
-        # Load share configuration
-        global share_config, SHARE_INTERVAL_SECONDS, SHARE_DELAY_BETWEEN_GROUPS, AUTO_SHARE_ENABLED, PROMO_MESSAGE
+        # Load share configuration - FIXED: removed global declaration
         share_config = load_share_config()
         SHARE_INTERVAL_SECONDS = share_config['share_interval_seconds']
         SHARE_DELAY_BETWEEN_GROUPS = share_config['share_delay_between_groups']
