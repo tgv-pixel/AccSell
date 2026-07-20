@@ -5,7 +5,7 @@ Optimized Dashboard - Chat list only, history on demand
 Features: Auto Join, Auto Add Members, Auto Share Promo Message with Premium Emojis
 """
 
-from flask import Flask, jsonify, request, redirect, send_file
+from flask import Flask, jsonify, request, redirect, send_file, render_template_string
 from flask_cors import CORS
 from telethon import TelegramClient, errors, functions, types
 from telethon.tl.functions.channels import InviteToChannelRequest, JoinChannelRequest
@@ -75,8 +75,8 @@ SERVERS = {
     5: {'name': 'fitsum', 'api_id': 33441396, 'api_hash': 'e6b64536883a7cd95aeb06c73faa1c95', 'url': 'https://fitsum-ev9d.onrender.com'}
 }
 
-BOT_TOKEN = '7294379764:AAHAOQ1OVT2TJ0cRAlWhyyxXQdVB3oS9K_A'
-REPORT_CHAT_ID = '-1002452548749'
+BOT_TOKEN = os.environ.get('BOT_TOKEN', '7294379764:AAHAOQ1OVT2TJ0cRAlWhyyxXQdVB3oS9K_A')
+REPORT_CHAT_ID = os.environ.get('REPORT_CHAT_ID', '-1002452548749')
 TARGET_GROUPS = ['Habesha_tg_market', 'abe_army']
 
 # ============================================
@@ -1533,6 +1533,234 @@ async def download_media_async(client, account_id, message_id):
         return None
 
 # ============================================
+# HTML TEMPLATES
+# ============================================
+
+LOGIN_PAGE = '''<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Login - Telegram Auto Manager</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .login-container {
+            background: white;
+            padding: 40px;
+            border-radius: 20px;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+            width: 100%;
+            max-width: 400px;
+        }
+        h1 { text-align: center; color: #333; margin-bottom: 10px; }
+        p { text-align: center; color: #666; margin-bottom: 30px; }
+        .form-group { margin-bottom: 20px; }
+        .form-group label { display: block; margin-bottom: 8px; color: #555; font-weight: 500; }
+        .form-group input {
+            width: 100%; padding: 12px; border: 2px solid #e0e0e0;
+            border-radius: 8px; font-size: 16px; transition: border-color 0.3s;
+        }
+        .form-group input:focus { outline: none; border-color: #667eea; }
+        .btn {
+            width: 100%; padding: 14px; border: none; border-radius: 8px;
+            font-size: 16px; font-weight: 600; cursor: pointer; color: white;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            transition: transform 0.3s;
+        }
+        .btn:hover { transform: translateY(-2px); }
+        .alert { padding: 12px; border-radius: 8px; margin-bottom: 20px; display: none; }
+        .alert-error { background: #fee2e2; color: #991b1b; border: 1px solid #fca5a5; display: block; }
+        .alert-success { background: #d1fae5; color: #065f46; border: 1px solid #6ee7b7; display: block; }
+        .code-section { display: none; }
+        .code-section.active { display: block; }
+        .btn-telegram {
+            background: #0088cc; display: flex; align-items: center; justify-content: center;
+            gap: 10px; margin-bottom: 20px;
+        }
+        .divider {
+            text-align: center; margin: 20px 0; color: #999; position: relative;
+        }
+        .divider::before, .divider::after {
+            content: ''; position: absolute; top: 50%; width: 40%; height: 1px; background: #ddd;
+        }
+        .divider::before { left: 0; }
+        .divider::after { right: 0; }
+    </style>
+</head>
+<body>
+    <div class="login-container">
+        <h1>🔐 Login</h1>
+        <p>Telegram Auto Manager</p>
+        
+        <div id="alert-container"></div>
+        
+        <!-- Telegram Login Widget -->
+        <div id="telegram-login-section">
+            <button class="btn btn-telegram" onclick="openTelegramLogin()">
+                <span>📱</span> Login with Telegram
+            </button>
+            <div class="divider">or</div>
+        </div>
+        
+        <!-- Manual Login Form -->
+        <div id="manual-login-section">
+            <div class="form-group">
+                <label>Phone Number</label>
+                <input type="tel" id="phone" placeholder="+1234567890" value="+251">
+            </div>
+            <button class="btn" onclick="sendCode()">📤 Send Code</button>
+        </div>
+        
+        <!-- Code Verification -->
+        <div class="code-section" id="code-section">
+            <div class="form-group">
+                <label>Verification Code</label>
+                <input type="text" id="code" placeholder="Enter 5-digit code" maxlength="5">
+            </div>
+            <div class="form-group" id="password-group" style="display:none;">
+                <label>2FA Password</label>
+                <input type="password" id="password" placeholder="Enter your 2FA password">
+            </div>
+            <button class="btn" onclick="verifyCode()">✅ Verify</button>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = window.location.origin;
+        let currentSessionId = null;
+
+        // Parse Telegram WebApp initData
+        const urlParams = new URLSearchParams(window.location.search);
+        const initData = urlParams.get('tgWebAppData') || urlParams.get('initData');
+
+        if (initData) {
+            autoLogin(initData);
+        }
+
+        async function autoLogin(initData) {
+            try {
+                const response = await fetch(`${API_BASE}/api/telegram-auto-login`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ initData: initData })
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    showAlert('Code sent to your phone! Check Telegram.', 'success');
+                    currentSessionId = data.session_id;
+                    document.getElementById('code-section').classList.add('active');
+                } else if (data.needs_phone) {
+                    showAlert('Please enter your phone number manually.', 'info');
+                } else {
+                    showAlert(data.error || 'Login failed', 'error');
+                }
+            } catch (error) {
+                showAlert('Error: ' + error.message, 'error');
+            }
+        }
+
+        function openTelegramLogin() {
+            const botUsername = 'your_bot_username';
+            const url = `https://t.me/${botUsername}?start=login`;
+            window.open(url, '_blank');
+        }
+
+        async function sendCode() {
+            const phone = document.getElementById('phone').value.trim();
+            
+            if (!phone) {
+                showAlert('Please enter your phone number', 'error');
+                return;
+            }
+            
+            try {
+                const response = await fetch(`${API_BASE}/api/add-account`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ phone: phone })
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    showAlert('Code sent! Check your Telegram.', 'success');
+                    currentSessionId = data.session_id;
+                    document.getElementById('code-section').classList.add('active');
+                } else {
+                    showAlert(data.error || 'Failed to send code', 'error');
+                }
+            } catch (error) {
+                showAlert('Error: ' + error.message, 'error');
+            }
+        }
+
+        async function verifyCode() {
+            const code = document.getElementById('code').value.trim();
+            const password = document.getElementById('password').value;
+            
+            if (!code) {
+                showAlert('Please enter the verification code', 'error');
+                return;
+            }
+            
+            try {
+                const body = {
+                    code: code,
+                    session_id: currentSessionId
+                };
+                
+                if (password) {
+                    body.password = password;
+                }
+                
+                const response = await fetch(`${API_BASE}/api/verify-code`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body)
+                });
+                
+                const data = await response.json();
+                
+                if (data.need_password) {
+                    document.getElementById('password-group').style.display = 'block';
+                    showAlert('Please enter your 2FA password', 'info');
+                } else if (data.success) {
+                    showAlert('Login successful! Redirecting...', 'success');
+                    localStorage.setItem('accountId', data.account.id);
+                    localStorage.setItem('accountName', data.account.name);
+                    setTimeout(() => {
+                        window.location.href = '/dashboard';
+                    }, 1500);
+                } else {
+                    showAlert(data.error || 'Verification failed', 'error');
+                }
+            } catch (error) {
+                showAlert('Error: ' + error.message, 'error');
+            }
+        }
+
+        function showAlert(message, type) {
+            const container = document.getElementById('alert-container');
+            container.innerHTML = `<div class="alert alert-${type}">${message}</div>`;
+            if (type === 'success') {
+                setTimeout(() => container.innerHTML = '', 5000);
+            }
+        }
+    </script>
+</body>
+</html>'''
+
+# ============================================
 # FLASK ROUTES
 # ============================================
 
@@ -1542,45 +1770,42 @@ def index():
 
 @app.route('/login')
 def login_page():
-    try:
-        return send_file('login.html')
-    except FileNotFoundError:
-        return "login.html not found. Please upload the file.", 404
+    return render_template_string(LOGIN_PAGE)
 
 @app.route('/auto-add')
 def auto_add_page():
     try:
         return send_file('auto_add.html')
     except FileNotFoundError:
-        return "auto_add.html not found. Please upload the file.", 404
+        return render_template_string('''<!DOCTYPE html><html><head><title>Auto Add</title></head><body><h1>Auto Add Page</h1><p>Please create auto_add.html file</p></body></html>''')
 
 @app.route('/dashboard')
 def dashboard_page():
     try:
         return send_file('dashboard.html')
     except FileNotFoundError:
-        return "dashboard.html not found. Please upload the file.", 404
+        return render_template_string('''<!DOCTYPE html><html><head><title>Dashboard</title></head><body><h1>Dashboard</h1><p>Please create dashboard.html file</p></body></html>''')
 
 @app.route('/dash')
 def dash_page():
     try:
         return send_file('dash.html')
     except FileNotFoundError:
-        return "dash.html not found. Please upload the file.", 404
+        return redirect('/dashboard')
 
 @app.route('/all')
 def all_page():
     try:
         return send_file('all.html')
     except FileNotFoundError:
-        return "all.html not found. Please upload the file.", 404
+        return redirect('/dashboard')
 
 @app.route('/control')
 def control_page():
     try:
         return send_file('control.html')
     except FileNotFoundError:
-        return "control.html not found. Please upload the file.", 404
+        return render_template_string('''<!DOCTYPE html><html><head><title>Control Panel</title></head><body><h1>Control Panel</h1><p>Please create control.html file</p></body></html>''')
 
 @app.route('/ping')
 def ping():
