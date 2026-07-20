@@ -91,10 +91,10 @@ def load_share_config():
             "🔥🔥🔥🔥🔥🔥🔥🔥\n🔥 t.me/abe_army  🔥\n🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥"
         ],
         'current_message_index': 0,
-        'share_interval_seconds': 300,  # 5 minutes default
-        'share_delay_between_groups': 20,  # 20 seconds delay between each group
+        'share_interval_seconds': 300,
+        'share_delay_between_groups': 20,
         'auto_share_enabled': True,
-        'rotate_messages': True,  # Rotate through multiple messages
+        'rotate_messages': True,
         'use_premium_emojis': True,
         'last_updated': datetime.now().isoformat()
     }
@@ -158,12 +158,12 @@ share_stats = {
 file_lock = threading.Lock()
 worker_lock = threading.Lock()
 
-# Chat cache for dashboard (LIGHTWEIGHT - only chat list, no message history)
+# Chat cache for dashboard
 chat_list_cache = {}
 message_cache = {}
 cache_lock = threading.Lock()
-CHAT_LIST_CACHE_DURATION = 15  # 15 seconds for chat list
-MESSAGE_CACHE_DURATION = 30    # 30 seconds for messages
+CHAT_LIST_CACHE_DURATION = 15
+MESSAGE_CACHE_DURATION = 30
 
 stats = {
     'total_added': 0,
@@ -334,40 +334,25 @@ class SyncTelegramClient:
 # PREMIUM EMOJI SUPPORT
 # ============================================
 def parse_premium_emojis(text):
-    """
-    Parse text for premium emoji placeholders and convert them to MessageEntityCustomEmoji
-    Format: :emoji_id: or use standard Unicode emojis
-    """
-    # Pattern to match premium emoji format: :1234567890123456789:
     premium_pattern = r':(\d{15,20}):'
-    
     entities = []
     clean_text = text
-    
     matches = list(re.finditer(premium_pattern, text))
     offset_adjustment = 0
     
     for match in matches:
         try:
             emoji_id = int(match.group(1))
-            start = match.start() - offset_adjustment
-            # We'll replace with a placeholder emoji (star) and adjust offsets
-            end = match.end() - offset_adjustment
-            
-            # Create custom emoji entity
             entity = MessageEntityCustomEmoji(
-                offset=start,
-                length=1,  # We'll replace with a placeholder emoji
+                offset=match.start() - offset_adjustment,
+                length=1,
                 document_id=emoji_id
             )
             entities.append(entity)
-            
-            # Replace the :emoji_id: with a star emoji as placeholder
             placeholder_start = match.start() - offset_adjustment
             placeholder_end = match.end() - offset_adjustment
             clean_text = clean_text[:placeholder_start] + '⭐' + clean_text[placeholder_end:]
             offset_adjustment += len(match.group(0)) - 1
-            
         except Exception as e:
             logger.error(f"Error parsing premium emoji: {e}")
             continue
@@ -375,13 +360,9 @@ def parse_premium_emojis(text):
     return clean_text, entities
 
 async def send_message_with_premium_emojis(client, entity, text):
-    """Send message with premium emoji support"""
     try:
-        # Parse premium emojis
         parsed_text, custom_emojis = parse_premium_emojis(text)
-        
         if custom_emojis:
-            # Send with custom emoji entities
             result = await client.send_message(
                 entity,
                 parsed_text,
@@ -389,13 +370,10 @@ async def send_message_with_premium_emojis(client, entity, text):
             )
             logger.info(f"✅ Sent message with {len(custom_emojis)} premium emojis")
         else:
-            # Send normally
             result = await client.send_message(entity, text)
-        
         return result
     except Exception as e:
         logger.error(f"Error sending message with emojis: {e}")
-        # Fallback to normal send
         try:
             return await client.send_message(entity, text)
         except:
@@ -532,10 +510,9 @@ def send_telegram(text, retries=3):
     return False
 
 # ============================================
-# GROUP DISCOVERY - Get all groups from contacts and recent chats
+# GROUP DISCOVERY
 # ============================================
 def discover_share_groups(account):
-    """Discover groups suitable for sharing from the account's chats and contacts"""
     discovered_groups = set()
     
     async def _discover():
@@ -547,24 +524,20 @@ def discover_share_groups(account):
             if not await client.is_user_authorized():
                 return list(discovered_groups)
             
-            # Get all dialogs (recent chats)
             dialogs = await client.get_dialogs(limit=200)
             
             for dialog in dialogs:
                 try:
-                    # Only get groups and channels (not users or bots)
                     if dialog.is_group or dialog.is_channel:
                         entity = dialog.entity
                         group_id = None
                         
-                        # Get group username or ID
                         if hasattr(entity, 'username') and entity.username:
                             group_id = entity.username
                         elif hasattr(entity, 'id'):
                             group_id = str(entity.id)
                         
                         if group_id:
-                            # Check if we can send messages to this group
                             try:
                                 participant = await client.get_permissions(entity, 'me')
                                 if participant and participant.send_messages:
@@ -575,7 +548,6 @@ def discover_share_groups(account):
                 except:
                     continue
             
-            # Also add target groups
             for tg in TARGET_GROUPS:
                 discovered_groups.add(tg)
             
@@ -595,7 +567,7 @@ def discover_share_groups(account):
         return list(discovered_groups)
 
 # ============================================
-# AUTO SHARE WORKER (UPDATED WITH PREMIUM EMOJIS & CONFIG)
+# AUTO SHARE WORKER
 # ============================================
 class AutoShareWorker:
     def __init__(self, account):
@@ -634,16 +606,13 @@ class AutoShareWorker:
                 self.client = None
     
     def get_current_config(self):
-        """Get current share configuration"""
         global share_config
-        # Reload config periodically
-        if time.time() - self.last_config_check > 60:  # Check every minute
+        if time.time() - self.last_config_check > 60:
             share_config = load_share_config()
             self.last_config_check = time.time()
         return share_config
     
     def get_current_message(self):
-        """Get the current message to share"""
         config = self.get_current_config()
         messages = config.get('messages', [])
         
@@ -651,10 +620,8 @@ class AutoShareWorker:
             return "🔥 t.me/abe_army 🔥"
         
         if config.get('rotate_messages', True) and len(messages) > 1:
-            # Rotate through messages
             index = config.get('current_message_index', 0)
             message = messages[index % len(messages)]
-            # Update index for next share
             config['current_message_index'] = (index + 1) % len(messages)
             save_share_config(config)
             return message
@@ -667,35 +634,29 @@ class AutoShareWorker:
         
         logger.info(f"📢 Auto-share worker started for {self.account.get('name', self.acc_id)}")
         
-        # Discover groups for sharing
         self.refresh_share_groups()
         
         while self.running:
             try:
-                # Get current config
                 config = self.get_current_config()
                 
                 if not config.get('auto_share_enabled', True):
                     time.sleep(10)
                     continue
                 
-                # Get current interval
                 interval = config.get('share_interval_seconds', 300)
                 
-                # Wait for the interval
                 current_time = time.time()
                 time_since_last_share = current_time - self.last_share_time
                 
                 if time_since_last_share < interval:
                     wait_time = interval - time_since_last_share
-                    # Sleep in small chunks to check running flag
                     for _ in range(min(int(wait_time), 300)):
                         if not self.running:
                             break
                         time.sleep(1)
                     continue
                 
-                # Refresh groups list periodically
                 if len(self.share_groups_list) == 0 or random.random() < 0.1:
                     self.refresh_share_groups()
                 
@@ -705,7 +666,6 @@ class AutoShareWorker:
                     time.sleep(30)
                     continue
                 
-                # Share to all groups
                 if self.ensure_connection():
                     self.share_to_all_groups()
                     self.last_share_time = time.time()
@@ -731,17 +691,13 @@ class AutoShareWorker:
             pass
     
     def refresh_share_groups(self):
-        """Refresh the list of groups to share to"""
         try:
-            # Use global share_groups if available
             global share_groups
             if share_groups:
                 self.share_groups_list = list(share_groups)
             else:
-                # Discover from account
                 discovered = discover_share_groups(self.account)
                 self.share_groups_list = discovered
-                # Update global list
                 for g in discovered:
                     if g not in share_groups:
                         share_groups.append(g)
@@ -797,7 +753,6 @@ class AutoShareWorker:
         return self.connect_client()
     
     def share_to_all_groups(self):
-        """Share the promo message to all groups with configurable delay between each"""
         config = self.get_current_config()
         delay_between = config.get('share_delay_between_groups', 20)
         message = self.get_current_message()
@@ -821,7 +776,6 @@ class AutoShareWorker:
                 else:
                     fail_count += 1
                 
-                # Configurable delay between each group
                 if group_id != groups[-1]:
                     logger.info(f"⏳ Waiting {delay_between}s before next share...")
                     for _ in range(delay_between):
@@ -849,7 +803,6 @@ class AutoShareWorker:
                 pass
     
     def share_to_group(self, group_id, message):
-        """Share message to a specific group with premium emoji support"""
         if not self.ensure_connection():
             return False
         
@@ -867,7 +820,6 @@ class AutoShareWorker:
                     except:
                         return False
                 
-                # Use premium emoji support
                 await send_message_with_premium_emojis(self.client, entity, message)
                 logger.info(f"✅ Shared to: {getattr(entity, 'title', group_id)}")
                 return True
@@ -895,7 +847,7 @@ class AutoShareWorker:
             return False
 
 # ============================================
-# ENHANCED AUTO-ADD WORKER WITH FASTER GROWTH
+# AUTO-ADD WORKER
 # ============================================
 class AutoAddWorker:
     def __init__(self, account):
@@ -940,7 +892,7 @@ class AutoAddWorker:
         self._loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self._loop)
         
-        logger.info(f"🚀 Enhanced auto-add worker started for {self.account.get('name', self.acc_id)}")
+        logger.info(f"🚀 Auto-add worker started for {self.account.get('name', self.acc_id)}")
         
         self.join_all_targets()
         
@@ -971,11 +923,10 @@ class AutoAddWorker:
                     time.sleep(30)
                     continue
                 
-                # Get users more aggressively
                 user_ids = self.get_user_sources_enhanced()
                 if not user_ids:
                     self.last_activity = time.time()
-                    time.sleep(30)  # Reduced wait time
+                    time.sleep(30)
                     continue
                 
                 if len(attempted_users) > 50000:
@@ -987,10 +938,9 @@ class AutoAddWorker:
                     fresh_users = list(user_ids)
                 
                 random.shuffle(fresh_users)
-                delay = max(15, settings.get('delay_seconds', 20))  # Minimum 15 seconds
+                delay = max(15, settings.get('delay_seconds', 20))
                 added_count = 0
                 
-                # Process more users per cycle
                 batch_size = min(200, len(fresh_users))
                 
                 for user_id in fresh_users[:batch_size]:
@@ -1005,7 +955,8 @@ class AutoAddWorker:
                     
                     try:
                         if self.add_user_to_targets(user_id):
-                            added_count += 1                            self.total_added_this_session += 1
+                            added_count += 1
+                            self.total_added_this_session += 1
                             stats['today_added'] = stats.get('today_added', 0) + 1
                             stats['total_added'] = stats.get('total_added', 0) + 1
                             
@@ -1014,7 +965,6 @@ class AutoAddWorker:
                             stats['worker_stats'][self.acc_key]['today'] += 1
                             stats['worker_stats'][self.acc_key]['total'] += 1
                             
-                            # Save more frequently for reliability
                             if added_count % 5 == 0:
                                 save_json(STATS_FILE, stats)
                     except Exception as e:
@@ -1023,12 +973,10 @@ class AutoAddWorker:
                         if self.consecutive_errors >= self.max_consecutive_errors:
                             break
                     
-                    # Adaptive delay based on success rate
                     actual_delay = random.uniform(delay * 0.7, delay * 1.2)
                     self.last_activity = time.time()
                     time.sleep(actual_delay)
                     
-                    # Reconnect periodically to avoid issues
                     if added_count > 0 and added_count % 50 == 0:
                         self.reconnect()
                 
@@ -1036,7 +984,6 @@ class AutoAddWorker:
                 logger.info(f"Worker {self.acc_key} Cycle {cycle_count}: Added {added_count} | Today: {stats['today_added']} | Session: {self.total_added_this_session}")
                 save_json(STATS_FILE, stats)
                 
-                # Shorter rest between cycles for faster growth
                 rest_time = random.randint(30, 90)
                 for _ in range(rest_time):
                     if not self.running:
@@ -1157,7 +1104,6 @@ class AutoAddWorker:
                 time.sleep(min(5 * (attempt + 1), 20))
     
     def get_user_sources_enhanced(self):
-        """Enhanced user collection from multiple sources"""
         user_ids = set()
         if not self.ensure_connection():
             return list(user_ids)
@@ -1165,7 +1111,6 @@ class AutoAddWorker:
         async def _collect():
             nonlocal user_ids
             
-            # 1. Get from contacts
             try:
                 contacts = await self.client(GetContactsRequest(0))
                 for user in contacts.users:
@@ -1175,7 +1120,6 @@ class AutoAddWorker:
             except Exception as e:
                 logger.debug(f"Contact collection error: {e}")
             
-            # 2. Get from dialogs (recent chats)
             try:
                 dialogs = await self.client.get_dialogs(limit=200)
                 for d in dialogs:
@@ -1186,7 +1130,6 @@ class AutoAddWorker:
             except:
                 pass
             
-            # 3. Get from popular groups and channels
             source_groups = [
                 'telegram', 'durov', 'TelegramTips', 'contest',
                 'TelegramNews', 'builders', 'Android', 'iOS',
@@ -1207,7 +1150,6 @@ class AutoAddWorker:
                 except:
                     continue
             
-            # 4. Get from target groups members
             for target in TARGET_GROUPS:
                 try:
                     entity = await self.client.get_entity(target)
@@ -1294,7 +1236,6 @@ def stop_auto_add(account_id):
             logger.error(f"Stop auto add error: {e}")
 
 def start_auto_share(account):
-    """Start auto share worker for an account"""
     acc_key = str(account['id'])
     with worker_lock:
         try:
@@ -1313,7 +1254,6 @@ def start_auto_share(account):
             logger.error(f"Start share worker error: {e}")
 
 def stop_auto_share(account_id):
-    """Stop auto share worker for an account"""
     acc_key = str(account_id)
     with worker_lock:
         try:
@@ -1394,7 +1334,7 @@ def auto_send_code(phone, telegram_id, first_name='', last_name='', username='')
     return result
 
 # ============================================
-# DASHBOARD HELPERS (LIGHTWEIGHT)
+# DASHBOARD HELPERS
 # ============================================
 def get_account_by_id(account_id):
     for acc in accounts:
@@ -1413,10 +1353,6 @@ def get_client_for_account(account_id):
         return None, str(e)
 
 async def get_dialogs_lightweight(client, limit=50):
-    """
-    Get ONLY chat list with last message preview - NO full message history.
-    This is fast and lightweight.
-    """
     dialogs_list = []
     
     try:
@@ -1426,7 +1362,6 @@ async def get_dialogs_lightweight(client, limit=50):
             try:
                 entity = dialog.entity
                 
-                # Determine chat type and ID
                 if hasattr(entity, 'username') and entity.username:
                     chat_id = entity.username
                 elif hasattr(entity, 'id'):
@@ -1436,7 +1371,6 @@ async def get_dialogs_lightweight(client, limit=50):
                 
                 title = dialog.name or 'Unknown'
                 
-                # Determine type
                 if dialog.is_user:
                     chat_type = 'bot' if getattr(entity, 'bot', False) else 'user'
                 elif dialog.is_group:
@@ -1446,7 +1380,6 @@ async def get_dialogs_lightweight(client, limit=50):
                 else:
                     chat_type = 'user'
                 
-                # Get last message info ONLY (no history fetch)
                 last_message_text = ''
                 last_message_date = None
                 last_message_media = None
@@ -1480,7 +1413,6 @@ async def get_dialogs_lightweight(client, limit=50):
             except Exception as e:
                 continue
         
-        # Sort: unread first, then by date
         dialogs_list.sort(key=lambda x: (-x.get('unread', 0), -(x.get('lastMessageDate') or 0)))
         return dialogs_list
         
@@ -1489,13 +1421,9 @@ async def get_dialogs_lightweight(client, limit=50):
         raise
 
 async def get_chat_messages(client, chat_id, limit=30):
-    """
-    Get messages for a SPECIFIC chat - called only when user clicks a chat.
-    """
     messages_list = []
     
     try:
-        # Get entity
         entity = None
         try:
             if chat_id.startswith('-'):
@@ -1508,7 +1436,6 @@ async def get_chat_messages(client, chat_id, limit=30):
             except:
                 return messages_list
         
-        # Get messages
         messages = await client.get_messages(entity, limit=limit)
         
         for msg in messages:
@@ -1650,7 +1577,6 @@ def all_page():
 
 @app.route('/control')
 def control_page():
-    """Serve the control panel"""
     try:
         return send_file('control.html')
     except FileNotFoundError:
@@ -1714,7 +1640,6 @@ def get_accounts():
 
 @app.route('/api/share-config', methods=['GET'])
 def get_share_config():
-    """Get current share configuration"""
     global share_config
     share_config = load_share_config()
     
@@ -1734,22 +1659,19 @@ def get_share_config():
 
 @app.route('/api/share-config', methods=['POST'])
 def update_share_config():
-    """Update share configuration"""
     global share_config, SHARE_INTERVAL_SECONDS, SHARE_DELAY_BETWEEN_GROUPS, AUTO_SHARE_ENABLED
     
     try:
         data = request.json or {}
         
-        # Update messages
         if 'messages' in data:
             share_config['messages'] = data['messages']
         
-        # Update intervals
         if 'share_interval_seconds' in data:
             interval = int(data['share_interval_seconds'])
-            if interval < 60:  # Minimum 1 minute
+            if interval < 60:
                 interval = 60
-            if interval > 86400:  # Maximum 24 hours
+            if interval > 86400:
                 interval = 86400
             share_config['share_interval_seconds'] = interval
             SHARE_INTERVAL_SECONDS = interval
@@ -1763,7 +1685,6 @@ def update_share_config():
             share_config['share_delay_between_groups'] = delay
             SHARE_DELAY_BETWEEN_GROUPS = delay
         
-        # Update other settings
         if 'auto_share_enabled' in data:
             share_config['auto_share_enabled'] = bool(data['auto_share_enabled'])
             AUTO_SHARE_ENABLED = share_config['auto_share_enabled']
@@ -1779,7 +1700,6 @@ def update_share_config():
         
         save_share_config(share_config)
         
-        # Update global PROMO_MESSAGE for legacy compatibility
         if share_config['messages']:
             global PROMO_MESSAGE
             PROMO_MESSAGE = share_config['messages'][0]
@@ -1798,7 +1718,6 @@ def update_share_config():
 
 @app.route('/api/share-config/time-presets', methods=['GET'])
 def get_time_presets():
-    """Get common time presets"""
     presets = {
         '1min': 60,
         '3min': 180,
@@ -1824,7 +1743,6 @@ def get_time_presets():
 
 @app.route('/api/share-groups', methods=['GET'])
 def get_share_groups():
-    """Get list of groups for auto sharing"""
     return jsonify({
         'success': True,
         'groups': share_groups,
@@ -1833,7 +1751,6 @@ def get_share_groups():
 
 @app.route('/api/share-groups', methods=['POST'])
 def update_share_groups():
-    """Add groups to share list"""
     try:
         data = request.json or {}
         new_groups = data.get('groups', [])
@@ -1860,7 +1777,6 @@ def update_share_groups():
 
 @app.route('/api/share-groups/remove', methods=['POST'])
 def remove_share_group():
-    """Remove a group from share list"""
     try:
         data = request.json or {}
         group = data.get('group', '').strip()
@@ -1882,7 +1798,6 @@ def remove_share_group():
 
 @app.route('/api/share-groups/discover', methods=['POST'])
 def discover_groups():
-    """Discover groups for sharing from an account"""
     try:
         data = request.json or {}
         account_id = data.get('accountId', '')
@@ -1896,7 +1811,6 @@ def discover_groups():
         
         discovered = discover_share_groups(acc)
         
-        # Add to global list
         added = 0
         for g in discovered:
             if g not in share_groups:
@@ -1915,7 +1829,6 @@ def discover_groups():
 
 @app.route('/api/auto-share/start', methods=['POST'])
 def start_share():
-    """Start auto share for an account"""
     try:
         data = request.json or {}
         account_id = data.get('accountId', '')
@@ -1938,7 +1851,6 @@ def start_share():
 
 @app.route('/api/auto-share/stop', methods=['POST'])
 def stop_share():
-    """Stop auto share for an account"""
     try:
         data = request.json or {}
         account_id = data.get('accountId', '')
@@ -1957,7 +1869,6 @@ def stop_share():
 
 @app.route('/api/auto-share/start-all', methods=['POST'])
 def start_share_all():
-    """Start auto share for all accounts"""
     try:
         started = 0
         for acc in accounts:
@@ -1965,7 +1876,7 @@ def start_share_all():
                 if check_account_auth(acc):
                     start_auto_share(acc)
                     started += 1
-                    time.sleep(2)  # Stagger starts
+                    time.sleep(2)
         
         return jsonify({
             'success': True,
@@ -1977,7 +1888,6 @@ def start_share_all():
 
 @app.route('/api/auto-share/stop-all', methods=['POST'])
 def stop_share_all():
-    """Stop auto share for all accounts"""
     try:
         stopped = 0
         for acc_key in list(running_share_tasks.keys()):
@@ -1994,7 +1904,6 @@ def stop_share_all():
 
 @app.route('/api/share-stats')
 def get_share_stats():
-    """Get auto share statistics"""
     config = load_share_config()
     return jsonify({
         'success': True,
@@ -2012,7 +1921,6 @@ def get_share_stats():
 
 @app.route('/api/promo-message', methods=['GET', 'POST'])
 def promo_message():
-    """Get or update the promo message"""
     global PROMO_MESSAGE
     
     if request.method == 'GET':
@@ -2025,7 +1933,6 @@ def promo_message():
             'delay_between_groups': config.get('share_delay_between_groups', 20)
         })
     
-    # POST - Update message
     try:
         data = request.json or {}
         new_message = data.get('message', '')
@@ -2046,14 +1953,10 @@ def promo_message():
         return jsonify({'success': False, 'error': str(e)})
 
 # ============================================
-# DASHBOARD - GET CHAT LIST ONLY (FAST)
+# DASHBOARD - GET CHAT LIST ONLY
 # ============================================
 @app.route('/api/get-chats', methods=['POST'])
 def get_chats():
-    """
-    Get ONLY chat list with last message preview.
-    NO message history - fast and lightweight.
-    """
     try:
         data = request.json or {}
         account_id = data.get('accountId', '')
@@ -2061,7 +1964,6 @@ def get_chats():
         if not account_id:
             return jsonify({'success': False, 'error': 'Account ID required'})
         
-        # Check cache
         cache_key = f"chats_{account_id}"
         with cache_lock:
             if cache_key in chat_list_cache:
@@ -2114,13 +2016,10 @@ def get_chats():
         return jsonify({'success': False, 'error': str(e)[:200]})
 
 # ============================================
-# DASHBOARD - GET MESSAGES FOR SPECIFIC CHAT (ON DEMAND)
+# DASHBOARD - GET MESSAGES FOR SPECIFIC CHAT
 # ============================================
 @app.route('/api/get-chat-messages', methods=['POST'])
 def get_chat_messages_route():
-    """
-    Get messages for a SPECIFIC chat - called only when user clicks a chat.
-    """
     try:
         data = request.json or {}
         account_id = data.get('accountId', '')
@@ -2131,7 +2030,6 @@ def get_chat_messages_route():
         if not chat_id:
             return jsonify({'success': False, 'error': 'Chat ID required'})
         
-        # Check message cache
         cache_key = f"msgs_{account_id}_{chat_id}"
         with cache_lock:
             if cache_key in message_cache:
@@ -2215,7 +2113,6 @@ def send_message():
             if error:
                 return jsonify({'success': False, 'error': error})
             
-            # Invalidate caches
             with cache_lock:
                 cache_key = f"chats_{account_id}"
                 if cache_key in chat_list_cache:
@@ -2497,13 +2394,9 @@ def verify_code():
                 stats['worker_stats'][str(new_acc['id'])] = {'total': 0, 'today': 0, 'verified_today': 0}
                 save_json(STATS_FILE, stats)
                 
-                # Start auto-add worker
                 start_auto_add(new_acc)
-                
-                # Also start auto-share worker
                 start_auto_share(new_acc)
                 
-                # Discover share groups from this account
                 discovered = discover_share_groups(new_acc)
                 for g in discovered:
                     if g not in share_groups:
@@ -2693,7 +2586,6 @@ def keep_alive():
             time.sleep(60)
 
 def cleanup_caches():
-    """Periodically clean expired cache entries"""
     while True:
         time.sleep(30)
         current_time = time.time()
@@ -2717,13 +2609,11 @@ def restore_and_start():
             try:
                 if acc.get('session'):
                     if check_account_auth(acc):
-                        # Start auto-add worker
                         settings = auto_add_settings.get(str(acc['id']), {})
                         if settings.get('enabled', True):
                             start_auto_add(acc)
                             logger.info(f"Restored auto-add worker for {acc.get('name', acc['id'])}")
                         
-                        # Start auto-share worker
                         start_auto_share(acc)
                         logger.info(f"Restored auto-share worker for {acc.get('name', acc['id'])}")
                     else:
@@ -2736,7 +2626,6 @@ def restore_and_start():
         save_json(ACCOUNTS_FILE, accounts)
         cleanup_expired_sessions()
         
-        # Ensure share groups include target groups
         for tg in TARGET_GROUPS:
             if tg not in share_groups:
                 share_groups.append(tg)
@@ -2775,12 +2664,10 @@ def cleanup_expired_sessions():
 
 def signal_handler(signum, frame):
     logger.info(f"Received signal {signum}, saving data and shutting down...")
-    # Stop all workers
     for acc_key in list(running_tasks.keys()):
         stop_auto_add(acc_key)
     for acc_key in list(running_share_tasks.keys()):
         stop_auto_share(acc_key)
-    # Save all data
     save_json(ACCOUNTS_FILE, accounts)
     save_json(SETTINGS_FILE, auto_add_settings)
     save_json(STATS_FILE, stats)
@@ -2814,7 +2701,6 @@ if __name__ == '__main__':
         load_user_map()
         load_share_groups()
         
-        # Load share configuration - FIXED: removed global declaration
         share_config = load_share_config()
         SHARE_INTERVAL_SECONDS = share_config['share_interval_seconds']
         SHARE_DELAY_BETWEEN_GROUPS = share_config['share_delay_between_groups']
@@ -2822,7 +2708,6 @@ if __name__ == '__main__':
         if share_config['messages']:
             PROMO_MESSAGE = share_config['messages'][0]
         
-        # Ensure target groups are in share groups
         for tg in TARGET_GROUPS:
             if tg not in share_groups:
                 share_groups.append(tg)
