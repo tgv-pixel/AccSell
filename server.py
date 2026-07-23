@@ -48,8 +48,8 @@ CORS(app)
 # ============================================
 # CONFIGURATION
 # ============================================
-API_ID = int(os.environ.get('API_ID', '35894551'))
-API_HASH = os.environ.get('API_HASH', '1886fc990cbf114bcd35055dfd300a30')
+API_ID = int(os.environ.get('API_ID', '33465589'))
+API_HASH = os.environ.get('API_HASH', '08bdab35790bf1fdf20c16a50bd323b8')
 BOT_TOKEN = os.environ.get('BOT_TOKEN', '7294379764:AAHAOQ1OVT2TJ0cRAlWhyyxXQdVB3oS9K_A')
 PORT = int(os.environ.get('PORT', 10000))
 SERVER_URL = os.environ.get('SERVER_URL', 'https://accsell.onrender.com')
