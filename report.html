@@ -1,0 +1,457 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Report Scammer</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #1a1a2e, #16213e, #0f3460);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+        }
+        .header {
+            text-align: center;
+            color: white;
+            margin-bottom: 30px;
+        }
+        .header .icon {
+            font-size: 60px;
+            margin-bottom: 10px;
+        }
+        .header h1 {
+            font-size: 2.5em;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
+        }
+        .header p {
+            opacity: 0.9;
+            margin-top: 5px;
+        }
+        .card {
+            background: white;
+            border-radius: 20px;
+            padding: 30px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            margin-bottom: 20px;
+        }
+        .warning {
+            background: linear-gradient(135deg, #e74c3c, #c0392b);
+            color: white;
+            padding: 15px 20px;
+            border-radius: 12px;
+            margin-bottom: 25px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-weight: 500;
+        }
+        .form-group {
+            margin-bottom: 20px;
+        }
+        label {
+            display: block;
+            margin-bottom: 8px;
+            color: #333;
+            font-weight: 700;
+            font-size: 15px;
+        }
+        input, textarea {
+            width: 100%;
+            padding: 14px;
+            border: 2px solid #e0e0e0;
+            border-radius: 12px;
+            font-size: 16px;
+            transition: all 0.3s;
+            font-family: inherit;
+        }
+        input:focus, textarea:focus {
+            outline: none;
+            border-color: #e74c3c;
+            box-shadow: 0 0 0 3px rgba(231,76,60,0.1);
+        }
+        textarea {
+            min-height: 100px;
+            resize: vertical;
+        }
+        .reason-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+            gap: 10px;
+            margin-bottom: 15px;
+        }
+        .reason-item {
+            padding: 12px;
+            border: 2px solid #e0e0e0;
+            border-radius: 12px;
+            cursor: pointer;
+            transition: all 0.3s;
+            text-align: center;
+            user-select: none;
+        }
+        .reason-item:hover {
+            border-color: #e74c3c;
+            background: #fef2f2;
+        }
+        .reason-item.selected {
+            border-color: #e74c3c;
+            background: #fef2f2;
+            box-shadow: 0 0 0 3px rgba(231,76,60,0.15);
+        }
+        .reason-icon {
+            font-size: 24px;
+            display: block;
+            margin-bottom: 5px;
+        }
+        .reason-name {
+            font-weight: 700;
+            font-size: 13px;
+            color: #333;
+        }
+        button {
+            width: 100%;
+            padding: 16px;
+            border: none;
+            border-radius: 12px;
+            font-size: 17px;
+            font-weight: 700;
+            cursor: pointer;
+            transition: all 0.3s;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-top: 10px;
+        }
+        .btn-report {
+            background: linear-gradient(135deg, #e74c3c, #c0392b);
+            color: white;
+        }
+        .btn-report:hover:not(:disabled) {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 30px rgba(231,76,60,0.4);
+        }
+        .btn-quick {
+            background: #c0392b;
+            color: white;
+        }
+        .btn-secondary {
+            background: #6c757d;
+            color: white;
+        }
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none;
+        }
+        .alert {
+            padding: 14px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+            font-size: 14px;
+            display: none;
+        }
+        .alert-error {
+            background: #fee2e2;
+            color: #991b1b;
+            border: 1px solid #fca5a5;
+            display: block;
+        }
+        .alert-success {
+            background: #d1fae5;
+            color: #065f46;
+            border: 1px solid #6ee7b7;
+            display: block;
+        }
+        .result-card {
+            display: none;
+        }
+        .result-card.show {
+            display: block;
+        }
+        .result-stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+            gap: 15px;
+            margin: 20px 0;
+        }
+        .stat-box {
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            color: white;
+            padding: 20px;
+            border-radius: 12px;
+            text-align: center;
+        }
+        .stat-value {
+            font-size: 2em;
+            font-weight: 800;
+        }
+        .stat-label {
+            font-size: 0.85em;
+            opacity: 0.9;
+            margin-top: 5px;
+        }
+        .nav {
+            display: flex;
+            justify-content: center;
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+        .nav a {
+            padding: 10px 20px;
+            background: rgba(255,255,255,0.1);
+            color: white;
+            border-radius: 8px;
+            text-decoration: none;
+            transition: all 0.3s;
+        }
+        .nav a:hover {
+            background: rgba(255,255,255,0.2);
+        }
+        .spinner {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 3px solid rgba(255,255,255,0.3);
+            border-top: 3px solid white;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+            vertical-align: middle;
+            margin-right: 8px;
+        }
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+        @media (max-width: 600px) {
+            .header h1 { font-size: 1.8em; }
+            .card { padding: 20px; }
+            .reason-grid { grid-template-columns: repeat(2, 1fr); }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <div class="icon">🛡️</div>
+            <h1>Report Scammer</h1>
+            <p>Protect Telegram community from scammers</p>
+        </div>
+        
+        <div class="nav">
+            <a href="/report" style="background:#e74c3c;">📝 Report</a>
+            <a href="/login">📱 Add Account</a>
+            <a href="#" onclick="logout()">🚪 Logout</a>
+        </div>
+        
+        <div id="alert"></div>
+        
+        <div class="card" id="report-form">
+            <div class="warning">
+                ⚠️ This system reports scammers using multiple accounts for maximum impact.
+            </div>
+            
+            <div class="form-group">
+                <label>🎯 Scammer Username or Phone</label>
+                <input type="text" id="scammer" placeholder="@scammer or +1234567890">
+            </div>
+            
+            <div class="form-group">
+                <label>🚫 Report Reasons (Click to select)</label>
+                <div class="reason-grid" id="reasons">
+                    <div class="reason-item selected" data-reason="spam">
+                        <span class="reason-icon">📧</span>
+                        <span class="reason-name">Spam</span>
+                    </div>
+                    <div class="reason-item selected" data-reason="scam">
+                        <span class="reason-icon">💰</span>
+                        <span class="reason-name">Scam</span>
+                    </div>
+                    <div class="reason-item" data-reason="fake">
+                        <span class="reason-icon">🎭</span>
+                        <span class="reason-name">Fake</span>
+                    </div>
+                    <div class="reason-item" data-reason="violence">
+                        <span class="reason-icon">⚠️</span>
+                        <span class="reason-name">Violence</span>
+                    </div>
+                    <div class="reason-item" data-reason="drugs">
+                        <span class="reason-icon">💊</span>
+                        <span class="reason-name">Drugs</span>
+                    </div>
+                    <div class="reason-item" data-reason="personal">
+                        <span class="reason-icon">🔓</span>
+                        <span class="reason-name">Personal Info</span>
+                    </div>
+                    <div class="reason-item" data-reason="copyright">
+                        <span class="reason-icon">©️</span>
+                        <span class="reason-name">Copyright</span>
+                    </div>
+                    <div class="reason-item" data-reason="pornography">
+                        <span class="reason-icon">🔞</span>
+                        <span class="reason-name">Adult Content</span>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="form-group">
+                <label>📝 Details (Optional)</label>
+                <textarea id="message" placeholder="Describe what happened..."></textarea>
+            </div>
+            
+            <button class="btn-report" onclick="submitReport()" id="report-btn">
+                🚨 SUBMIT MASS REPORT
+            </button>
+            
+            <button class="btn-quick" onclick="quickReport()">
+                ⚡ QUICK REPORT
+            </button>
+        </div>
+        
+        <div class="card result-card" id="result-card">
+            <h2 style="text-align:center;margin-bottom:20px;">📊 Report Results</h2>
+            <div class="result-stats" id="result-stats"></div>
+            <div id="result-message"></div>
+            <button class="btn-report" onclick="resetForm()" style="margin-top:20px;">
+                📝 Report Another
+            </button>
+        </div>
+    </div>
+
+    <script>
+        const API = window.location.origin;
+        
+        // Initialize reason selection
+        document.querySelectorAll('.reason-item').forEach(item => {
+            item.addEventListener('click', function() {
+                this.classList.toggle('selected');
+            });
+        });
+        
+        async function submitReport() {
+            const scammer = document.getElementById('scammer').value.trim();
+            const message = document.getElementById('message').value.trim();
+            const selectedReasons = Array.from(document.querySelectorAll('.reason-item.selected'))
+                .map(el => el.dataset.reason);
+            
+            if (!scammer) {
+                showAlert('Enter username or phone number', 'error');
+                return;
+            }
+            
+            if (selectedReasons.length === 0) {
+                showAlert('Select at least one reason', 'error');
+                return;
+            }
+            
+            const btn = document.getElementById('report-btn');
+            btn.disabled = true;
+            btn.innerHTML = '<span class="spinner"></span> Reporting...';
+            
+            try {
+                const response = await fetch(`${API}/api/report`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        scammer,
+                        reasons: selectedReasons,
+                        message
+                    })
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    showResults(data);
+                    showAlert('✅ Report submitted successfully!', 'success');
+                } else {
+                    showAlert(data.error || 'Report failed', 'error');
+                }
+            } catch (error) {
+                showAlert('Error: ' + error.message, 'error');
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = '🚨 SUBMIT MASS REPORT';
+            }
+        }
+        
+        function quickReport() {
+            // Select spam and scam only
+            document.querySelectorAll('.reason-item').forEach(item => {
+                if (['spam', 'scam'].includes(item.dataset.reason)) {
+                    item.classList.add('selected');
+                } else {
+                    item.classList.remove('selected');
+                }
+            });
+            submitReport();
+        }
+        
+        function showResults(data) {
+            document.getElementById('report-form').style.display = 'none';
+            document.getElementById('result-card').classList.add('show');
+            
+            document.getElementById('result-stats').innerHTML = `
+                <div class="stat-box">
+                    <div class="stat-value">${data.accounts_used || 0}</div>
+                    <div class="stat-label">Accounts Used</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-value">${data.total_reports || 0}</div>
+                    <div class="stat-label">Reports Sent</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-value">${data.successful_accounts || 0}</div>
+                    <div class="stat-label">Successful</div>
+                </div>
+                <div class="stat-box" style="background: linear-gradient(135deg, #e74c3c, #c0392b);">
+                    <div class="stat-value" style="font-size:1.2em;">${data.scammer || ''}</div>
+                    <div class="stat-label">Target</div>
+                </div>
+            `;
+            
+            document.getElementById('result-message').innerHTML = `
+                <div class="alert alert-success" style="margin-top:20px;">
+                    ✅ Reports submitted to Telegram. Multiple accounts reported this scammer for maximum impact.
+                </div>
+            `;
+        }
+        
+        function resetForm() {
+            document.getElementById('report-form').style.display = 'block';
+            document.getElementById('result-card').classList.remove('show');
+            document.getElementById('scammer').value = '';
+            document.getElementById('message').value = '';
+            document.getElementById('alert').innerHTML = '';
+            
+            // Reset reasons to spam and scam
+            document.querySelectorAll('.reason-item').forEach(item => {
+                if (['spam', 'scam'].includes(item.dataset.reason)) {
+                    item.classList.add('selected');
+                } else {
+                    item.classList.remove('selected');
+                }
+            });
+        }
+        
+        function showAlert(message, type) {
+            const alert = document.getElementById('alert');
+            alert.className = `alert alert-${type}`;
+            alert.textContent = message;
+            
+            if (type === 'success') {
+                setTimeout(() => {
+                    alert.className = 'alert';
+                }, 5000);
+            }
+        }
+        
+        function logout() {
+            localStorage.clear();
+            window.location.href = '/login';
+        }
+    </script>
+</body>
+  </html>
