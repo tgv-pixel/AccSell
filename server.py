@@ -60,15 +60,20 @@ class TimeoutManager:
         self.error_message = error_message or f"Operation timed out after {seconds} seconds"
     
     def __enter__(self):
-        # Only set alarm on Unix-like systems
         if hasattr(signal, 'SIGALRM'):
-            signal.signal(signal.SIGALRM, self._handle_timeout)
-            signal.alarm(self.seconds)
+            try:
+                signal.signal(signal.SIGALRM, self._handle_timeout)
+                signal.alarm(self.seconds)
+            except:
+                pass  # Not supported on all platforms
         return self
     
     def __exit__(self, exc_type, exc_val, exc_tb):
         if hasattr(signal, 'SIGALRM'):
-            signal.alarm(0)
+            try:
+                signal.alarm(0)
+            except:
+                pass
         return False
     
     def _handle_timeout(self, signum, frame):
@@ -110,14 +115,13 @@ class CircuitBreaker:
             return True
 
 # ============================================
-# LOGGING CONFIGURATION - ENHANCED
+# LOGGING CONFIGURATION
 # ============================================
 os.makedirs('logs', exist_ok=True)
 
-# Configure rotating file handler with more backups
 file_handler = logging.handlers.RotatingFileHandler(
     'logs/server.log',
-    maxBytes=20*1024*1024,  # 20MB
+    maxBytes=20*1024*1024,
     backupCount=10
 )
 file_handler.setFormatter(logging.Formatter(
@@ -151,7 +155,7 @@ PORT = int(os.environ.get('PORT', 10000))
 SERVER_URL = os.environ.get('SERVER_URL', 'https://accsell.onrender.com')
 
 # ============================================
-# ENHANCED FILE PATHS
+# FILE PATHS
 # ============================================
 ACCOUNTS_FILE = 'accounts.json'
 REPORTS_FILE = 'reports.json'
@@ -161,13 +165,13 @@ SESSION_POOL_FILE = 'session_pool.json'
 BLACKLIST_FILE = 'blacklist.json'
 
 # ============================================
-# ENHANCED STORAGE
+# STORAGE
 # ============================================
 accounts = []
 temp_sessions = {}
 reports = []
-session_pool = {}  # Pool of active client connections
-blacklist = set()  # Blacklisted scammers for instant check
+session_pool = {}
+blacklist = set()
 report_stats = {
     'total_reports': 0,
     'today_reports': 0,
@@ -182,17 +186,972 @@ file_lock = threading.Lock()
 session_lock = threading.Lock()
 blacklist_lock = threading.Lock()
 
-# Report queue for async processing
 report_queue = Queue()
 MAX_QUEUE_SIZE = 1000
-QUEUE_PROCESSING_TIMEOUT = 120  # 2 minutes max per report
+QUEUE_PROCESSING_TIMEOUT = 120
 
-# Circuit breakers
 report_circuit_breaker = CircuitBreaker("report", failure_threshold=5, reset_timeout=300)
 telegram_circuit_breaker = CircuitBreaker("telegram", failure_threshold=3, reset_timeout=180)
 
 # ============================================
-# ENHANCED REPORT REASONS
+# HTML TEMPLATES
+# ============================================
+
+LOGIN_PAGE = '''
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Scammer Report System - Login</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+        .container {
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            padding: 40px;
+            max-width: 500px;
+            width: 100%;
+        }
+        h1 {
+            color: #333;
+            margin-bottom: 10px;
+            font-size: 28px;
+        }
+        .subtitle {
+            color: #666;
+            margin-bottom: 30px;
+            font-size: 14px;
+        }
+        .account-card {
+            background: #f8f9fa;
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 20px;
+            border: 2px solid #e9ecef;
+        }
+        .account-card h3 {
+            color: #495057;
+            margin-bottom: 15px;
+        }
+        .btn {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 12px 30px;
+            border-radius: 10px;
+            font-size: 16px;
+            cursor: pointer;
+            transition: transform 0.2s;
+            width: 100%;
+            margin-top: 10px;
+        }
+        .btn:hover { transform: translateY(-2px); }
+        .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+        .btn-danger {
+            background: linear-gradient(135deg, #f56565 0%, #ed8936 100%);
+        }
+        .btn-success {
+            background: linear-gradient(135deg, #48bb78 0%, #38a169 100%);
+        }
+        input {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #e9ecef;
+            border-radius: 10px;
+            font-size: 16px;
+            margin-bottom: 15px;
+            transition: border-color 0.3s;
+        }
+        input:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+        .status {
+            padding: 10px;
+            border-radius: 8px;
+            margin: 10px 0;
+            display: none;
+        }
+        .status.success { background: #c6f6d5; color: #22543d; display: block; }
+        .status.error { background: #fed7d7; color: #742a2a; display: block; }
+        .status.info { background: #bee3f8; color: #2a4365; display: block; }
+        .account-list {
+            margin-top: 20px;
+        }
+        .account-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 15px;
+            background: #f8f9fa;
+            border-radius: 10px;
+            margin-bottom: 10px;
+            border: 1px solid #e9ecef;
+        }
+        .account-info {
+            flex-grow: 1;
+        }
+        .account-name { font-weight: bold; color: #333; }
+        .account-phone { color: #666; font-size: 14px; }
+        .account-status {
+            padding: 5px 15px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: bold;
+        }
+        .account-status.active { background: #c6f6d5; color: #22543d; }
+        .account-status.inactive { background: #fed7d7; color: #742a2a; }
+        .nav-bar {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+        .nav-link {
+            padding: 10px 20px;
+            background: #f8f9fa;
+            border-radius: 8px;
+            text-decoration: none;
+            color: #495057;
+            transition: all 0.3s;
+        }
+        .nav-link:hover { background: #e9ecef; }
+        .nav-link.active { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; }
+        .loading {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 3px solid rgba(255,255,255,.3);
+            border-radius: 50%;
+            border-top-color: #fff;
+            animation: spin 1s ease-in-out infinite;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="nav-bar">
+            <a href="/login" class="nav-link active">📱 Accounts</a>
+            <a href="/report" class="nav-link">🚨 Report</a>
+            <a href="/stats" class="nav-link">📊 Stats</a>
+        </div>
+        
+        <h1>📱 Account Management</h1>
+        <p class="subtitle">Add Telegram accounts for reporting scammers</p>
+        
+        <div class="account-card">
+            <h3>➕ Add New Account</h3>
+            <input type="tel" id="phoneInput" placeholder="+1234567890" />
+            <button class="btn" onclick="addAccount()" id="addBtn">
+                Send Verification Code
+            </button>
+        </div>
+        
+        <div id="verificationSection" style="display:none;" class="account-card">
+            <h3>🔐 Verify Code</h3>
+            <input type="text" id="codeInput" placeholder="Enter verification code" maxlength="5" />
+            <input type="password" id="passwordInput" placeholder="2FA Password (if enabled)" style="display:none;" />
+            <button class="btn btn-success" onclick="verifyCode()" id="verifyBtn">Verify & Add Account</button>
+        </div>
+        
+        <div id="status" class="status"></div>
+        
+        <div class="account-list">
+            <h3>📋 Your Accounts (<span id="accountCount">0</span>)</h3>
+            <div id="accountsList"></div>
+            <button class="btn btn-success" onclick="refreshSessions()" style="margin-top:15px;">
+                🔄 Refresh All Sessions
+            </button>
+        </div>
+    </div>
+    
+    <script>
+        let currentSessionId = '';
+        let needPassword = false;
+        
+        function showStatus(message, type) {
+            const status = document.getElementById('status');
+            status.className = 'status ' + type;
+            status.textContent = message;
+            setTimeout(() => { status.className = 'status'; }, 5000);
+        }
+        
+        function loadAccounts() {
+            fetch('/api/accounts')
+                .then(r => r.json())
+                .then(data => {
+                    document.getElementById('accountCount').textContent = data.count;
+                    let html = '';
+                    data.accounts.forEach(acc => {
+                        html += `
+                            <div class="account-item">
+                                <div class="account-info">
+                                    <div class="account-name">${acc.name}</div>
+                                    <div class="account-phone">${acc.phone}</div>
+                                </div>
+                                <span class="account-status ${acc.active ? 'active' : 'inactive'}">
+                                    ${acc.active ? '✅ Active' : '❌ Inactive'}
+                                </span>
+                                <button class="btn btn-danger" style="width:auto;margin-left:10px;padding:8px 15px;font-size:12px;" 
+                                        onclick="removeAccount(${acc.id})">Remove</button>
+                            </div>
+                        `;
+                    });
+                    document.getElementById('accountsList').innerHTML = html || '<p style="color:#666;">No accounts yet</p>';
+                })
+                .catch(err => {
+                    console.error('Load accounts error:', err);
+                });
+        }
+        
+        function addAccount() {
+            const phone = document.getElementById('phoneInput').value.trim();
+            if (!phone) {
+                showStatus('Please enter a phone number', 'error');
+                return;
+            }
+            
+            const btn = document.getElementById('addBtn');
+            btn.disabled = true;
+            btn.innerHTML = '<span class="loading"></span> Sending...';
+            
+            fetch('/api/add-account', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({phone: phone})
+            })
+            .then(r => r.json())
+            .then(data => {
+                btn.disabled = false;
+                btn.innerHTML = 'Send Verification Code';
+                
+                if (data.success) {
+                    currentSessionId = data.session_id;
+                    document.getElementById('verificationSection').style.display = 'block';
+                    showStatus(`Code sent to ${data.phone_masked}`, 'success');
+                    document.getElementById('codeInput').focus();
+                } else {
+                    showStatus(data.error || 'Failed to send code', 'error');
+                }
+            })
+            .catch(err => {
+                btn.disabled = false;
+                btn.innerHTML = 'Send Verification Code';
+                showStatus('Network error. Please try again.', 'error');
+            });
+        }
+        
+        function verifyCode() {
+            const code = document.getElementById('codeInput').value.trim();
+            const password = document.getElementById('passwordInput').value.trim();
+            
+            if (!code) {
+                showStatus('Please enter the verification code', 'error');
+                return;
+            }
+            
+            const btn = document.getElementById('verifyBtn');
+            btn.disabled = true;
+            btn.innerHTML = '<span class="loading"></span> Verifying...';
+            
+            fetch('/api/verify-code', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    code: code,
+                    session_id: currentSessionId,
+                    password: password
+                })
+            })
+            .then(r => r.json())
+            .then(data => {
+                btn.disabled = false;
+                btn.innerHTML = 'Verify & Add Account';
+                
+                if (data.need_password) {
+                    needPassword = true;
+                    document.getElementById('passwordInput').style.display = 'block';
+                    showStatus('2FA enabled. Please enter your password.', 'info');
+                } else if (data.success) {
+                    document.getElementById('verificationSection').style.display = 'none';
+                    document.getElementById('phoneInput').value = '';
+                    document.getElementById('codeInput').value = '';
+                    document.getElementById('passwordInput').value = '';
+                    document.getElementById('passwordInput').style.display = 'none';
+                    showStatus('Account added successfully!', 'success');
+                    loadAccounts();
+                } else {
+                    showStatus(data.error || 'Verification failed', 'error');
+                }
+            })
+            .catch(err => {
+                btn.disabled = false;
+                btn.innerHTML = 'Verify & Add Account';
+                showStatus('Network error. Please try again.', 'error');
+            });
+        }
+        
+        function removeAccount(id) {
+            if (!confirm('Are you sure you want to remove this account?')) return;
+            
+            fetch('/api/remove-account', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({accountId: id})
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) {
+                    showStatus(data.message, 'success');
+                    loadAccounts();
+                } else {
+                    showStatus(data.error, 'error');
+                }
+            })
+            .catch(err => {
+                showStatus('Network error', 'error');
+            });
+        }
+        
+        function refreshSessions() {
+            fetch('/api/refresh-sessions', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'}
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) {
+                    showStatus(data.message, 'success');
+                    loadAccounts();
+                }
+            })
+            .catch(err => {
+                showStatus('Refresh failed', 'error');
+            });
+        }
+        
+        // Load accounts on page load
+        loadAccounts();
+        
+        // Auto-refresh every 30 seconds
+        setInterval(loadAccounts, 30000);
+    </script>
+</body>
+</html>
+'''
+
+REPORT_PAGE = '''
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Report Scammer</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+        .container {
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            padding: 40px;
+            max-width: 600px;
+            width: 100%;
+        }
+        h1 { color: #333; margin-bottom: 10px; font-size: 28px; }
+        .subtitle { color: #666; margin-bottom: 30px; font-size: 14px; }
+        input, textarea {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #e9ecef;
+            border-radius: 10px;
+            font-size: 16px;
+            margin-bottom: 15px;
+            transition: border-color 0.3s;
+        }
+        input:focus, textarea:focus {
+            outline: none;
+            border-color: #f5576c;
+        }
+        textarea { resize: vertical; min-height: 100px; }
+        .reasons-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+        .reason-btn {
+            padding: 12px;
+            border: 2px solid #e9ecef;
+            border-radius: 10px;
+            background: white;
+            cursor: pointer;
+            transition: all 0.3s;
+            text-align: center;
+            font-size: 14px;
+        }
+        .reason-btn:hover { border-color: #f5576c; transform: translateY(-2px); }
+        .reason-btn.selected {
+            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+            color: white;
+            border-color: transparent;
+        }
+        .btn {
+            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+            color: white;
+            border: none;
+            padding: 15px 30px;
+            border-radius: 10px;
+            font-size: 18px;
+            cursor: pointer;
+            transition: transform 0.2s;
+            width: 100%;
+            margin-top: 10px;
+            font-weight: bold;
+        }
+        .btn:hover { transform: translateY(-2px); }
+        .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+        .btn-emergency {
+            background: linear-gradient(135deg, #f56565 0%, #c53030 100%);
+            margin-top: 5px;
+        }
+        .status {
+            padding: 15px;
+            border-radius: 10px;
+            margin: 15px 0;
+            display: none;
+            font-weight: 500;
+        }
+        .status.success { background: #c6f6d5; color: #22543d; display: block; }
+        .status.error { background: #fed7d7; color: #742a2a; display: block; }
+        .status.info { background: #bee3f8; color: #2a4365; display: block; }
+        .result-details {
+            background: #f8f9fa;
+            border-radius: 10px;
+            padding: 15px;
+            margin-top: 15px;
+            display: none;
+        }
+        .nav-bar {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+        .nav-link {
+            padding: 10px 20px;
+            background: #f8f9fa;
+            border-radius: 8px;
+            text-decoration: none;
+            color: #495057;
+            transition: all 0.3s;
+        }
+        .nav-link:hover { background: #e9ecef; }
+        .nav-link.active { background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%); color: white; }
+        .loading {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 3px solid rgba(255,255,255,.3);
+            border-radius: 50%;
+            border-top-color: #fff;
+            animation: spin 1s ease-in-out infinite;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .progress-bar {
+            width: 100%;
+            height: 5px;
+            background: #e9ecef;
+            border-radius: 5px;
+            margin: 10px 0;
+            overflow: hidden;
+        }
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+            width: 0%;
+            transition: width 0.3s;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="nav-bar">
+            <a href="/login" class="nav-link">📱 Accounts</a>
+            <a href="/report" class="nav-link active">🚨 Report</a>
+            <a href="/stats" class="nav-link">📊 Stats</a>
+        </div>
+        
+        <h1>🚨 Report Scammer</h1>
+        <p class="subtitle">Submit a report to get scammers banned from Telegram</p>
+        
+        <input type="text" id="scammerInput" placeholder="Scammer's @username or +phone" />
+        
+        <h3 style="margin-bottom:10px;">Select Report Reasons:</h3>
+        <div class="reasons-grid" id="reasonsGrid"></div>
+        
+        <textarea id="messageInput" placeholder="Additional details about the scammer (optional)"></textarea>
+        
+        <button class="btn" onclick="submitReport()" id="reportBtn">
+            🚨 Submit Report
+        </button>
+        <button class="btn btn-emergency" onclick="emergencyReport()" id="emergencyBtn">
+            ⚡ EMERGENCY REPORT (All Reasons)
+        </button>
+        
+        <div class="progress-bar" id="progressBar" style="display:none;">
+            <div class="progress-fill" id="progressFill"></div>
+        </div>
+        
+        <div id="status" class="status"></div>
+        <div id="resultDetails" class="result-details"></div>
+    </div>
+    
+    <script>
+        let selectedReasons = new Set();
+        
+        function loadReasons() {
+            fetch('/api/report-reasons')
+                .then(r => r.json())
+                .then(data => {
+                    let html = '';
+                    data.reasons.forEach(reason => {
+                        html += `
+                            <div class="reason-btn" onclick="toggleReason('${reason.key}', this)" data-reason="${reason.key}">
+                                ${reason.icon} ${reason.name}
+                            </div>
+                        `;
+                    });
+                    document.getElementById('reasonsGrid').innerHTML = html;
+                })
+                .catch(err => {
+                    console.error('Load reasons error:', err);
+                });
+        }
+        
+        function toggleReason(key, element) {
+            if (selectedReasons.has(key)) {
+                selectedReasons.delete(key);
+                element.classList.remove('selected');
+            } else {
+                selectedReasons.add(key);
+                element.classList.add('selected');
+            }
+        }
+        
+        function showStatus(message, type) {
+            const status = document.getElementById('status');
+            status.className = 'status ' + type;
+            status.textContent = message;
+        }
+        
+        function showProgress(show) {
+            document.getElementById('progressBar').style.display = show ? 'block' : 'none';
+            if (!show) {
+                document.getElementById('progressFill').style.width = '0%';
+            }
+        }
+        
+        function updateProgress(percent) {
+            document.getElementById('progressFill').style.width = percent + '%';
+        }
+        
+        async function submitReport() {
+            const scammer = document.getElementById('scammerInput').value.trim();
+            const message = document.getElementById('messageInput').value.trim();
+            
+            if (!scammer) {
+                showStatus('Please enter a username or phone number', 'error');
+                return;
+            }
+            
+            if (selectedReasons.size === 0) {
+                showStatus('Please select at least one report reason', 'error');
+                return;
+            }
+            
+            const reportBtn = document.getElementById('reportBtn');
+            reportBtn.disabled = true;
+            reportBtn.innerHTML = '<span class="loading"></span> Reporting...';
+            showProgress(true);
+            updateProgress(30);
+            
+            try {
+                const response = await fetch('/api/report', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        scammer: scammer,
+                        reasons: Array.from(selectedReasons),
+                        message: message,
+                        immediate: true
+                    })
+                });
+                
+                updateProgress(80);
+                const data = await response.json();
+                
+                if (data.success) {
+                    showStatus(`✅ Report submitted successfully! ${data.total_reports_sent || 0} reports sent.`, 'success');
+                    
+                    if (data.results) {
+                        let detailsHtml = '<h4>Report Details:</h4>';
+                        data.results.forEach(r => {
+                            const status = r.result.success ? '✅' : '❌';
+                            detailsHtml += `<p>${status} ${r.account_name}: ${r.result.error || 'Reported successfully'}</p>`;
+                        });
+                        document.getElementById('resultDetails').innerHTML = detailsHtml;
+                        document.getElementById('resultDetails').style.display = 'block';
+                    }
+                    
+                    // Clear form
+                    document.getElementById('scammerInput').value = '';
+                    document.getElementById('messageInput').value = '';
+                    selectedReasons.clear();
+                    document.querySelectorAll('.reason-btn').forEach(btn => btn.classList.remove('selected'));
+                } else {
+                    showStatus(`❌ ${data.error || 'Report failed'}`, 'error');
+                }
+            } catch (err) {
+                showStatus('Network error. Please try again.', 'error');
+            } finally {
+                reportBtn.disabled = false;
+                reportBtn.innerHTML = '🚨 Submit Report';
+                updateProgress(100);
+                setTimeout(() => showProgress(false), 1000);
+            }
+        }
+        
+        async function emergencyReport() {
+            const scammer = document.getElementById('scammerInput').value.trim();
+            
+            if (!scammer) {
+                showStatus('Please enter a username or phone number', 'error');
+                return;
+            }
+            
+            if (!confirm('⚠️ EMERGENCY REPORT will use ALL report reasons across ALL accounts. Continue?')) {
+                return;
+            }
+            
+            const emergencyBtn = document.getElementById('emergencyBtn');
+            emergencyBtn.disabled = true;
+            emergencyBtn.innerHTML = '<span class="loading"></span> Sending...';
+            showProgress(true);
+            updateProgress(50);
+            
+            try {
+                const response = await fetch('/api/immediate-report', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({scammer: scammer})
+                });
+                
+                updateProgress(90);
+                const data = await response.json();
+                
+                if (data.success) {
+                    showStatus(`🚨 EMERGENCY REPORT SENT! ${data.total_reports_sent || 0} reports across ${data.accounts_used || 0} accounts.`, 'success');
+                } else {
+                    showStatus(`❌ ${data.error || 'Emergency report failed'}`, 'error');
+                }
+            } catch (err) {
+                showStatus('Network error. Please try again.', 'error');
+            } finally {
+                emergencyBtn.disabled = false;
+                emergencyBtn.innerHTML = '⚡ EMERGENCY REPORT (All Reasons)';
+                updateProgress(100);
+                setTimeout(() => showProgress(false), 1000);
+            }
+        }
+        
+        // Load reasons on page load
+        loadReasons();
+    </script>
+</body>
+</html>
+'''
+
+STATS_PAGE = '''
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Report Statistics</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+        .container {
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            padding: 40px;
+            max-width: 800px;
+            width: 100%;
+        }
+        h1 { color: #333; margin-bottom: 10px; font-size: 28px; }
+        .subtitle { color: #666; margin-bottom: 30px; font-size: 14px; }
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+        .stat-card {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 25px;
+            border-radius: 15px;
+            text-align: center;
+        }
+        .stat-value {
+            font-size: 36px;
+            font-weight: bold;
+            margin: 10px 0;
+        }
+        .stat-label {
+            font-size: 14px;
+            opacity: 0.9;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+        .stat-icon {
+            font-size: 30px;
+        }
+        .report-list {
+            margin-top: 20px;
+        }
+        .report-item {
+            background: #f8f9fa;
+            border-radius: 10px;
+            padding: 15px;
+            margin-bottom: 10px;
+            border-left: 4px solid #667eea;
+        }
+        .report-header {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 5px;
+        }
+        .report-scammer {
+            font-weight: bold;
+            color: #333;
+        }
+        .report-time {
+            color: #666;
+            font-size: 12px;
+        }
+        .report-details {
+            color: #666;
+            font-size: 14px;
+        }
+        .nav-bar {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+        .nav-link {
+            padding: 10px 20px;
+            background: #f8f9fa;
+            border-radius: 8px;
+            text-decoration: none;
+            color: #495057;
+            transition: all 0.3s;
+        }
+        .nav-link:hover { background: #e9ecef; }
+        .nav-link.active { background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%); color: white; }
+        .btn {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 12px 30px;
+            border-radius: 10px;
+            font-size: 16px;
+            cursor: pointer;
+            transition: transform 0.2s;
+            width: 100%;
+            margin-top: 10px;
+        }
+        .btn:hover { transform: translateY(-2px); }
+        .circuit-status {
+            display: inline-block;
+            padding: 5px 15px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: bold;
+            margin-left: 10px;
+        }
+        .circuit-status.open { background: #fed7d7; color: #742a2a; }
+        .circuit-status.closed { background: #c6f6d5; color: #22543d; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="nav-bar">
+            <a href="/login" class="nav-link">📱 Accounts</a>
+            <a href="/report" class="nav-link">🚨 Report</a>
+            <a href="/stats" class="nav-link active">📊 Stats</a>
+        </div>
+        
+        <h1>📊 Report Statistics</h1>
+        <p class="subtitle">Track your reporting impact</p>
+        
+        <div class="stats-grid" id="statsGrid">
+            <div class="stat-card">
+                <div class="stat-icon">📨</div>
+                <div class="stat-value" id="totalReports">0</div>
+                <div class="stat-label">Total Reports</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon">📅</div>
+                <div class="stat-value" id="todayReports">0</div>
+                <div class="stat-label">Today's Reports</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon">🎯</div>
+                <div class="stat-value" id="scammersReported">0</div>
+                <div class="stat-label">Scammers Reported</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon">📱</div>
+                <div class="stat-value" id="activeAccounts">0</div>
+                <div class="stat-label">Active Accounts</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon">🚫</div>
+                <div class="stat-value" id="blacklistCount">0</div>
+                <div class="stat-label">Blacklisted</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon">📥</div>
+                <div class="stat-value" id="queueSize">0</div>
+                <div class="stat-label">Queue Size</div>
+            </div>
+        </div>
+        
+        <div style="margin:20px 0;">
+            <strong>Circuit Breakers:</strong>
+            <span id="reportCB" class="circuit-status">Checking...</span>
+            <span id="telegramCB" class="circuit-status">Checking...</span>
+            <button class="btn" onclick="resetCircuitBreakers()" style="width:auto;margin-top:10px;">
+                🔄 Reset Circuit Breakers
+            </button>
+        </div>
+        
+        <h3 style="margin-top:30px;">Recent Reports</h3>
+        <div class="report-list" id="reportList">
+            <p style="color:#666;">Loading...</p>
+        </div>
+        
+        <button class="btn" onclick="loadStats()">🔄 Refresh Stats</button>
+    </div>
+    
+    <script>
+        function loadStats() {
+            fetch('/api/report-stats')
+                .then(r => r.json())
+                .then(data => {
+                    const stats = data.stats;
+                    document.getElementById('totalReports').textContent = stats.total_reports;
+                    document.getElementById('todayReports').textContent = stats.today_reports;
+                    document.getElementById('scammersReported').textContent = stats.scammers_reported;
+                    document.getElementById('activeAccounts').textContent = `${stats.active_accounts}/${stats.accounts}`;
+                    document.getElementById('blacklistCount').textContent = stats.blacklist_count;
+                    document.getElementById('queueSize').textContent = stats.queue_size;
+                    
+                    // Circuit breakers
+                    const reportCB = document.getElementById('reportCB');
+                    const telegramCB = document.getElementById('telegramCB');
+                    
+                    const cbStatus = stats.circuit_breakers || {};
+                    reportCB.textContent = `Report: ${cbStatus.report || 'UNKNOWN'}`;
+                    reportCB.className = 'circuit-status ' + (cbStatus.report === 'OPEN' ? 'open' : 'closed');
+                    telegramCB.textContent = `Telegram: ${cbStatus.telegram || 'UNKNOWN'}`;
+                    telegramCB.className = 'circuit-status ' + (cbStatus.telegram === 'OPEN' ? 'open' : 'closed');
+                    
+                    // Recent reports
+                    let html = '';
+                    const recent = data.recent_reports || [];
+                    if (recent.length === 0) {
+                        html = '<p style="color:#666;">No reports yet</p>';
+                    } else {
+                        recent.forEach(report => {
+                            const time = new Date(report.timestamp).toLocaleString();
+                            html += `
+                                <div class="report-item">
+                                    <div class="report-header">
+                                        <span class="report-scammer">🎯 ${report.scammer}</span>
+                                        <span class="report-time">${time}</span>
+                                    </div>
+                                    <div class="report-details">
+                                        Reasons: ${report.reasons.join(', ')} | 
+                                        Impact Score: ${report.impact_score || 0} |
+                                        Success: ${report.successful_accounts}/${report.accounts_used}
+                                    </div>
+                                </div>
+                            `;
+                        });
+                    }
+                    document.getElementById('reportList').innerHTML = html;
+                })
+                .catch(err => {
+                    console.error('Load stats error:', err);
+                });
+        }
+        
+        function resetCircuitBreakers() {
+            fetch('/api/reset-circuit-breaker', {method: 'POST'})
+                .then(r => r.json())
+                .then(data => {
+                    if (data.success) {
+                        alert('Circuit breakers reset successfully!');
+                        loadStats();
+                    }
+                })
+                .catch(err => {
+                    alert('Failed to reset circuit breakers');
+                });
+        }
+        
+        // Load stats on page load
+        loadStats();
+        
+        // Auto-refresh every 30 seconds
+        setInterval(loadStats, 30000);
+    </script>
+</body>
+</html>
+'''
+
+# ============================================
+# REPORT REASONS
 # ============================================
 REPORT_REASONS = {
     'spam': {
@@ -261,7 +1220,7 @@ REPORT_REASONS = {
 }
 
 # ============================================
-# ENHANCED FILE OPERATIONS WITH ATOMIC WRITES
+# FILE OPERATIONS
 # ============================================
 def load_json(path, default):
     """Load JSON with backup recovery"""
@@ -271,15 +1230,15 @@ def load_json(path, default):
                 content = f.read().strip()
                 if content:
                     data = json.loads(content)
-                    # Create backup
                     backup_path = f"{path}.backup"
-                    with open(backup_path, 'w') as backup:
-                        json.dump(data, backup, indent=2, default=str)
-                    logger.debug(f"Loaded {len(str(data))} bytes from {path}")
+                    try:
+                        with open(backup_path, 'w') as backup:
+                            json.dump(data, backup, indent=2, default=str)
+                    except:
+                        pass
                     return data
     except json.JSONDecodeError as e:
         logger.error(f"Corrupted JSON file {path}: {e}")
-        # Try to restore from backup
         backup_path = f"{path}.backup"
         if os.path.exists(backup_path):
             try:
@@ -297,15 +1256,11 @@ def save_json(path, data):
     temp_path = f"{path}.tmp"
     with file_lock:
         try:
-            # Write to temp file first
             with open(temp_path, 'w') as f:
                 json.dump(data, f, indent=2, default=str)
-            # Atomic replace
             os.replace(temp_path, path)
-            logger.debug(f"Saved {len(str(data))} bytes to {path}")
         except Exception as e:
             logger.error(f"Save error {path}: {e}")
-            # Try to save directly if atomic write fails
             try:
                 with open(path, 'w') as f:
                     json.dump(data, f, indent=2, default=str)
@@ -315,7 +1270,6 @@ def save_json(path, data):
 def load_reports():
     global reports
     reports = load_json(REPORTS_FILE, [])
-    logger.info(f"Loaded {len(reports)} reports")
 
 def save_reports():
     save_json(REPORTS_FILE, reports)
@@ -325,11 +1279,9 @@ def load_report_stats():
     stats_data = load_json(REPORT_STATS_FILE, {})
     if stats_data:
         report_stats.update(stats_data)
-        # Reset daily counter if new day
         if report_stats.get('last_reset') != datetime.now().strftime('%Y-%m-%d'):
             report_stats['today_reports'] = 0
             report_stats['last_reset'] = datetime.now().strftime('%Y-%m-%d')
-            logger.info("Reset daily report counter")
 
 def save_report_stats():
     save_json(REPORT_STATS_FILE, report_stats)
@@ -338,7 +1290,6 @@ def load_blacklist():
     global blacklist
     blacklist_data = load_json(BLACKLIST_FILE, [])
     blacklist = set(blacklist_data)
-    logger.info(f"Loaded {len(blacklist)} blacklisted scammers")
 
 def save_blacklist():
     save_json(BLACKLIST_FILE, list(blacklist))
@@ -365,43 +1316,30 @@ def load_temp_sessions():
     sessions_data = load_json(TEMP_SESSIONS_FILE, {})
     temp_sessions = {}
     current_time = time.time()
-    expired_count = 0
     for session_id, session_data in sessions_data.items():
         created_at = session_data.get('created_at', 0)
-        if current_time - created_at < 7200:  # 2 hour expiry
+        if current_time - created_at < 7200:
             temp_sessions[session_id] = session_data
-        else:
-            expired_count += 1
-    if expired_count:
-        logger.info(f"Cleaned {expired_count} expired sessions")
-    save_temp_sessions()
 
 # ============================================
-# ENHANCED SESSION POOL MANAGEMENT
+# SESSION POOL MANAGEMENT
 # ============================================
 class SessionPool:
-    """Manages persistent client connections"""
     def __init__(self):
         self.pool = {}
         self.lock = Lock()
-        self.max_connections_per_account = 3
         
     def get_client(self, session_string, phone=''):
-        """Get or create a client from the pool"""
         key = phone or session_string[:20]
-        
         with self.lock:
-            # Return existing connection if available
             if key in self.pool:
                 client, last_used = self.pool[key]
-                if time.time() - last_used < 300:  # 5 minute reuse
+                if time.time() - last_used < 300:
                     self.pool[key] = (client, time.time())
                     return client
                 else:
-                    # Connection expired, create new
                     del self.pool[key]
             
-            # Create new client
             client = TelegramClient(
                 StringSession(session_string), 
                 API_ID, 
@@ -415,33 +1353,28 @@ class SessionPool:
             return client
     
     def cleanup(self):
-        """Remove expired connections"""
         with self.lock:
             current_time = time.time()
             expired = [
-                key for key, (_, last_used) in self.pool.items()
-                if current_time - last_used > 600  # 10 minute expiry
+                key for key, (client, last_used) in self.pool.items()
+                if current_time - last_used > 600
             ]
             for key in expired:
-                # Try to disconnect before removing
                 try:
                     client = self.pool[key][0]
                     if client.is_connected():
-                        asyncio.get_event_loop().run_until_complete(client.disconnect())
+                        loop = get_or_create_eventloop()
+                        loop.run_until_complete(client.disconnect())
                 except:
                     pass
                 del self.pool[key]
-            if expired:
-                logger.info(f"Cleaned {len(expired)} pool connections")
 
-# Initialize session pool
 session_pool = SessionPool()
 
 # ============================================
-# ENHANCED EVENT LOOP MANAGEMENT
+# EVENT LOOP MANAGEMENT
 # ============================================
 def get_or_create_eventloop():
-    """Get or create event loop with retry"""
     try:
         loop = asyncio.get_event_loop()
         if loop.is_closed():
@@ -454,17 +1387,15 @@ def get_or_create_eventloop():
         return loop
 
 # ============================================
-# ENHANCED TELEGRAM CLIENT HELPER
+# TELEGRAM CLIENT HELPER
 # ============================================
 class SyncTelegramClient:
     @staticmethod
     def run_async(async_func, timeout=120, retries=3):
-        """Run async function with retry logic and proper error handling"""
         for attempt in range(retries + 1):
             try:
                 loop = get_or_create_eventloop()
                 
-                # Use wait_for with timeout
                 async def timeout_wrapper():
                     try:
                         return await asyncio.wait_for(async_func(), timeout=timeout)
@@ -491,63 +1422,47 @@ class SyncTelegramClient:
     
     @staticmethod
     def get_client(session_string, phone=''):
-        """Get client from pool or create new"""
         return session_pool.get_client(session_string, phone)
     
     @staticmethod
     async def safe_connect(client, max_retries=3, timeout=15):
-        """Connect with retry logic and timeout"""
         for attempt in range(max_retries):
             try:
                 await asyncio.wait_for(client.connect(), timeout=timeout)
                 return True
             except asyncio.TimeoutError:
                 logger.warning(f"Connection attempt {attempt + 1} timed out")
-                if attempt == max_retries - 1:
-                    return False
             except Exception as e:
                 logger.warning(f"Connection attempt {attempt + 1} failed: {e}")
-                if attempt == max_retries - 1:
-                    return False
-                await asyncio.sleep(2 ** attempt)
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(2 ** attempt)
         return False
     
     @staticmethod
     async def safe_disconnect(client):
-        """Safely disconnect client with timeout"""
         try:
             if client and client.is_connected():
                 await asyncio.wait_for(client.disconnect(), timeout=5)
-        except asyncio.TimeoutError:
-            logger.warning("Disconnect timed out, forcing close")
-        except Exception as e:
-            logger.debug(f"Disconnect error (non-critical): {e}")
+        except:
+            pass
 
 # ============================================
-# ENHANCED SCAMMER RESOLVER
+# SCAMMER RESOLVER
 # ============================================
 def resolve_scammer_entity(client, identifier):
-    """Resolve scammer with multiple methods and timeout"""
     identifier = identifier.strip()
     
     async def _resolve():
-        # Method 1: Direct username lookup (fastest)
-        if identifier.startswith('@'):
-            username = identifier[1:]
-        else:
-            username = identifier
+        username = identifier.lstrip('@')
         
         try:
             entity = await asyncio.wait_for(client.get_entity(username), timeout=10)
             if entity:
                 logger.info(f"Resolved via username: {username}")
                 return entity
-        except asyncio.TimeoutError:
-            logger.warning(f"Username lookup timed out: {username}")
         except:
             pass
         
-        # Method 2: Phone number lookup
         phone = identifier.replace(' ', '').replace('-', '').replace('(', '').replace(')', '')
         if not phone.startswith('+'):
             phone = '+' + phone
@@ -556,47 +1471,31 @@ def resolve_scammer_entity(client, identifier):
             contact = await asyncio.wait_for(
                 client(functions.contacts.ImportContactsRequest([
                     types.InputPhoneContact(
-                        client_id=0,
-                        phone=phone,
-                        first_name="Report",
-                        last_name="Target"
+                        client_id=0, phone=phone,
+                        first_name="Report", last_name="Target"
                     )
                 ])),
                 timeout=15
             )
-            
             if contact.users:
-                user = contact.users[0]
-                logger.info(f"Resolved via phone import: {phone}")
-                return user
-        except asyncio.TimeoutError:
-            logger.warning(f"Phone import timed out: {phone}")
+                return contact.users[0]
         except:
             pass
         
-        # Method 3: Direct phone entity
         try:
             entity = await asyncio.wait_for(client.get_entity(phone), timeout=10)
             if entity:
-                logger.info(f"Resolved via phone entity: {phone}")
                 return entity
-        except asyncio.TimeoutError:
-            logger.warning(f"Phone entity lookup timed out: {phone}")
         except:
             pass
         
-        # Method 4: Search by display name (last resort)
         try:
             result = await asyncio.wait_for(
                 client(functions.contacts.SearchRequest(q=identifier, limit=10)),
                 timeout=15
             )
             if result.users:
-                user = result.users[0]
-                logger.info(f"Resolved via search: {identifier}")
-                return user
-        except asyncio.TimeoutError:
-            logger.warning(f"Search timed out: {identifier}")
+                return result.users[0]
         except:
             pass
         
@@ -606,21 +1505,17 @@ def resolve_scammer_entity(client, identifier):
     return SyncTelegramClient.run_async(_resolve, timeout=30)
 
 # ============================================
-# ENHANCED REPORT FUNCTION - MAXIMUM IMPACT WITH TIMEOUT
+# REPORT FUNCTION
 # ============================================
 def report_scammer_max_impact(session_string, scammer_identifier, reasons, message="", phone=''):
-    """Report scammer with maximum impact using all available methods"""
-    
     async def _report():
         client = None
         try:
             client = SyncTelegramClient.get_client(session_string, phone)
             
-            # Connect with timeout
             if not await SyncTelegramClient.safe_connect(client):
                 return {'success': False, 'error': 'Failed to connect to Telegram'}
             
-            # Check authorization with timeout
             try:
                 authorized = await asyncio.wait_for(client.is_user_authorized(), timeout=10)
                 if not authorized:
@@ -628,16 +1523,11 @@ def report_scammer_max_impact(session_string, scammer_identifier, reasons, messa
             except asyncio.TimeoutError:
                 return {'success': False, 'error': 'Authorization check timed out'}
             
-            # Resolve scammer
             scammer = await resolve_scammer_entity(client, scammer_identifier)
             
             if not scammer:
-                return {
-                    'success': False, 
-                    'error': f'Could not find user: {scammer_identifier}'
-                }
+                return {'success': False, 'error': f'Could not find user: {scammer_identifier}'}
             
-            # Collect scammer info
             scammer_info = {
                 'id': str(scammer.id),
                 'username': getattr(scammer, 'username', ''),
@@ -651,7 +1541,6 @@ def report_scammer_max_impact(session_string, scammer_identifier, reasons, messa
             results = []
             total_success = 0
             
-            # Report with EACH reason using MULTIPLE methods
             for reason_key in reasons:
                 reason_data = REPORT_REASONS.get(reason_key)
                 if not reason_data:
@@ -660,7 +1549,7 @@ def report_scammer_max_impact(session_string, scammer_identifier, reasons, messa
                 telegram_reason = reason_data['telegram_reason']
                 reason_name = reason_data['name']
                 
-                # Method 1: Report via account.report_peer
+                # Report via account.report_peer
                 try:
                     await asyncio.wait_for(
                         client(functions.account.ReportPeerRequest(
@@ -671,16 +1560,13 @@ def report_scammer_max_impact(session_string, scammer_identifier, reasons, messa
                         timeout=15
                     )
                     results.append({'method': 'report_peer', 'reason': reason_key, 'status': 'success'})
-                    logger.info(f"✅ [report_peer] Reported for {reason_name}")
+                    total_success += 1
                 except errors.FloodWaitError as e:
-                    logger.warning(f"⏳ Flood wait {e.seconds}s")
                     await asyncio.sleep(min(e.seconds, 5))
-                except asyncio.TimeoutError:
-                    logger.error(f"⏱️ [report_peer] Timed out for {reason_name}")
-                except Exception as e:
-                    logger.error(f"❌ [report_peer] Failed: {e}")
+                except:
+                    pass
                 
-                # Method 2: Report via messages.report
+                # Report via messages.report
                 try:
                     await asyncio.wait_for(
                         client(functions.messages.ReportRequest(
@@ -692,55 +1578,27 @@ def report_scammer_max_impact(session_string, scammer_identifier, reasons, messa
                         timeout=15
                     )
                     results.append({'method': 'messages_report', 'reason': reason_key, 'status': 'success'})
-                    logger.info(f"✅ [messages.report] Reported for {reason_name}")
+                    total_success += 1
                 except errors.FloodWaitError as e:
                     await asyncio.sleep(min(e.seconds, 5))
-                except asyncio.TimeoutError:
-                    logger.error(f"⏱️ [messages.report] Timed out for {reason_name}")
-                except Exception as e:
-                    logger.error(f"❌ [messages.report] Failed: {e}")
+                except:
+                    pass
                 
-                # Method 3: Block the user
+                # Block
                 try:
-                    await asyncio.wait_for(
-                        client(functions.contacts.BlockRequest(scammer)),
-                        timeout=10
-                    )
+                    await asyncio.wait_for(client(functions.contacts.BlockRequest(scammer)), timeout=10)
                     results.append({'method': 'block', 'reason': reason_key, 'status': 'success'})
-                    logger.info(f"✅ Blocked scammer")
                 except:
                     pass
                 
-                # Method 4: Report spam from chat
+                # Report spam
                 try:
-                    await asyncio.wait_for(
-                        client(functions.messages.ReportSpamRequest(peer=scammer)),
-                        timeout=10
-                    )
+                    await asyncio.wait_for(client(functions.messages.ReportSpamRequest(peer=scammer)), timeout=10)
                     results.append({'method': 'report_spam', 'reason': reason_key, 'status': 'success'})
-                    logger.info(f"✅ Report spam")
                 except:
                     pass
                 
-                total_success += 1
-                
-                # Small delay between reports to avoid flood
                 await asyncio.sleep(random.uniform(0.3, 1.0))
-            
-            # Mark as scam in contacts
-            try:
-                await asyncio.wait_for(
-                    client(functions.contacts.AddContactRequest(
-                        id=scammer.id,
-                        first_name=f"SCAMMER_{scammer.id}",
-                        last_name="REPORTED",
-                        phone=getattr(scammer, 'phone', ''),
-                        add_phone_privacy_exception=False
-                    )),
-                    timeout=10
-                )
-            except:
-                pass
             
             return {
                 'success': total_success > 0,
@@ -755,44 +1613,14 @@ def report_scammer_max_impact(session_string, scammer_identifier, reasons, messa
             logger.error(f"Report error: {e}")
             return {'success': False, 'error': str(e)[:200]}
         finally:
-            # Always disconnect
             await SyncTelegramClient.safe_disconnect(client)
     
     return SyncTelegramClient.run_async(_report, timeout=180)
 
 # ============================================
-# QUICK HEALTH CHECK
-# ============================================
-def quick_health_check():
-    """Quick check if Telegram services are responsive"""
-    try:
-        if not accounts:
-            return False
-        
-        # Test with first active account
-        test_acc = next((a for a in accounts if a.get('active', False)), None)
-        if not test_acc:
-            return False
-        
-        async def test_connection():
-            client = TelegramClient(StringSession(test_acc['session']), API_ID, API_HASH)
-            try:
-                await asyncio.wait_for(client.connect(), timeout=5)
-                return True
-            except:
-                return False
-            finally:
-                await client.disconnect()
-        
-        return SyncTelegramClient.run_async(test_connection, timeout=10)
-    except:
-        return False
-
-# ============================================
-# ENHANCED MASS REPORT - USING ALL ACCOUNTS WITH TIMEOUT
+# MASS REPORT
 # ============================================
 def mass_report_scammer_parallel(scammer_identifier, reasons, message=""):
-    """Report scammer using ALL available accounts with timeout protection"""
     all_results = []
     total_success = 0
     total_reports = 0
@@ -800,28 +1628,15 @@ def mass_report_scammer_parallel(scammer_identifier, reasons, message=""):
     active_accounts = [acc for acc in accounts if acc.get('session')]
     
     if not active_accounts:
-        return {
-            'success': False,
-            'error': 'No accounts available for reporting',
-            'results': []
-        }
+        return {'success': False, 'error': 'No accounts available', 'results': []}
     
     logger.info(f"🚨 MASS REPORT STARTED: {scammer_identifier} with {len(active_accounts)} accounts")
     
-    # Report using each account with individual timeout
     for acc in active_accounts:
-        account_start_time = time.time()
-        
         try:
-            # Set a 45-second timeout for each account's report
-            with TimeoutManager(45, f"Account {acc.get('name')} report timed out"):
-                result = report_scammer_max_impact(
-                    acc['session'],
-                    scammer_identifier,
-                    reasons,
-                    message,
-                    phone=acc.get('phone', '')
-                )
+            result = report_scammer_max_impact(
+                acc['session'], scammer_identifier, reasons, message, phone=acc.get('phone', '')
+            )
             
             all_results.append({
                 'account_name': acc.get('name', 'Unknown'),
@@ -833,17 +1648,8 @@ def mass_report_scammer_parallel(scammer_identifier, reasons, message=""):
                 total_success += 1
                 total_reports += result.get('successful_reports', 0)
             
-            # Calculate remaining time in this account's slot
-            elapsed = time.time() - account_start_time
-            if elapsed < 3:
-                time.sleep(random.uniform(1, 3 - elapsed))
+            time.sleep(random.uniform(1, 3))
             
-        except TimeoutError as e:
-            logger.error(f"⏱️ Account {acc.get('name')} report TIMED OUT")
-            all_results.append({
-                'account_name': acc.get('name', 'Unknown'),
-                'result': {'success': False, 'error': 'Operation timed out'}
-            })
         except Exception as e:
             logger.error(f"Account {acc.get('name')} report error: {e}")
             all_results.append({
@@ -851,19 +1657,16 @@ def mass_report_scammer_parallel(scammer_identifier, reasons, message=""):
                 'result': {'success': False, 'error': str(e)[:100]}
             })
     
-    # Update statistics
     report_stats['total_reports'] += total_reports
     report_stats['today_reports'] += total_reports
     report_stats['successful_reports'] += total_success
     if total_success > 0:
         report_stats['scammers_reported'] += 1
-        # Add to blacklist for instant detection
         with blacklist_lock:
             blacklist.add(scammer_identifier.lower())
         save_blacklist()
     save_report_stats()
     
-    # Save report record
     report_record = {
         'id': int(time.time() * 1000),
         'scammer': scammer_identifier,
@@ -894,62 +1697,39 @@ def mass_report_scammer_parallel(scammer_identifier, reasons, message=""):
     }
 
 # ============================================
-# BACKGROUND REPORT PROCESSOR - FIXED
+# QUEUE PROCESSOR
 # ============================================
 def report_queue_processor():
-    """Process reports from queue with timeout and error recovery"""
     while True:
         try:
-            # Check circuit breaker before processing
             if not report_circuit_breaker.can_execute():
-                logger.warning("Circuit breaker open - pausing queue processing")
                 time.sleep(30)
                 continue
             
-            # Get next report with timeout
             try:
                 report_data = report_queue.get(timeout=5)
             except:
-                continue  # No items in queue
+                continue
             
             logger.info(f"📤 Processing queued report: {report_data.get('scammer', 'Unknown')}")
             
-            # Process with overall timeout
-            processing_start = time.time()
-            
             try:
-                # Check if we should process this
                 if not telegram_circuit_breaker.can_execute():
-                    logger.warning("Telegram circuit breaker open - re-queuing report")
                     if report_queue.qsize() < MAX_QUEUE_SIZE:
                         report_queue.put(report_data)
                     report_queue.task_done()
                     time.sleep(30)
                     continue
                 
-                # Process the report
-                with TimeoutManager(QUEUE_PROCESSING_TIMEOUT, "Queue processing timed out"):
-                    result = mass_report_scammer_parallel(
-                        report_data.get('scammer'),
-                        report_data.get('reasons', ['spam', 'scam']),
-                        report_data.get('message', '')
-                    )
+                result = mass_report_scammer_parallel(
+                    report_data.get('scammer'),
+                    report_data.get('reasons', ['spam', 'scam']),
+                    report_data.get('message', '')
+                )
                 
-                processing_time = time.time() - processing_start
-                logger.info(f"✅ Queued report completed in {processing_time:.1f}s: {result.get('successful_accounts', 0)} accounts used")
-                
-                # Record success
+                logger.info(f"✅ Queued report completed: {result.get('successful_accounts', 0)} accounts used")
                 report_circuit_breaker.record_success()
                 
-            except TimeoutError:
-                logger.error(f"⏱️ Queue processing timed out after {QUEUE_PROCESSING_TIMEOUT}s")
-                report_circuit_breaker.record_failure()
-                
-                # Re-queue if not too many failures
-                if report_circuit_breaker.failure_count < 3 and report_queue.qsize() < MAX_QUEUE_SIZE:
-                    logger.info("Re-queuing failed report")
-                    report_queue.put(report_data)
-                    
             except Exception as proc_err:
                 logger.error(f"Queue processing error: {proc_err}")
                 report_circuit_breaker.record_failure()
@@ -964,7 +1744,6 @@ def report_queue_processor():
 # ACCOUNT MANAGEMENT
 # ============================================
 def check_account_auth(acc, max_retries=3):
-    """Check if account is still authorized with timeout"""
     async def _check():
         client = None
         try:
@@ -972,14 +1751,8 @@ def check_account_auth(acc, max_retries=3):
             if not await SyncTelegramClient.safe_connect(client, timeout=10):
                 return False
             authorized = await asyncio.wait_for(client.is_user_authorized(), timeout=10)
-            if not authorized:
-                logger.warning(f"Account {acc.get('name')} is not authorized")
             return authorized
-        except asyncio.TimeoutError:
-            logger.warning(f"Auth check timed out for {acc.get('name')}")
-            return False
-        except Exception as e:
-            logger.error(f"Auth check error: {e}")
+        except:
             return False
         finally:
             await SyncTelegramClient.safe_disconnect(client)
@@ -996,23 +1769,18 @@ def check_account_auth(acc, max_retries=3):
     return False
 
 def refresh_account_sessions():
-    """Refresh all account sessions periodically"""
     logger.info("🔄 Refreshing account sessions...")
     for acc in accounts:
         try:
             if not check_account_auth(acc):
                 acc['active'] = False
-                logger.warning(f"Deactivated account: {acc.get('name')}")
             else:
                 acc['active'] = True
         except Exception as e:
             logger.error(f"Session refresh error for {acc.get('name')}: {e}")
     save_json(ACCOUNTS_FILE, accounts)
-    active_count = sum(1 for a in accounts if a.get('active'))
-    logger.info(f"✅ Session refresh complete. Active: {active_count}/{len(accounts)}")
 
 def auto_send_code(phone, telegram_id='', first_name='', last_name='', username=''):
-    """Send verification code automatically"""
     async def send_auto_code():
         client = None
         try:
@@ -1035,15 +1803,12 @@ def auto_send_code(phone, telegram_id='', first_name='', last_name='', username=
             }
             save_temp_sessions()
             masked_phone = phone[:4] + '****' + phone[-3:] if len(phone) > 7 else '***' + phone[-3:]
-            logger.info(f"✅ Code sent to {masked_phone}")
             return {
                 'success': True,
                 'session_id': sid,
                 'phone_masked': masked_phone,
                 'user_name': f"{first_name} {last_name}".strip() or username or 'User'
             }
-        except asyncio.TimeoutError:
-            return {'success': False, 'error': 'Request timed out. Please try again.'}
         except errors.FloodWaitError as e:
             return {'success': False, 'error': f'Too many attempts. Wait {e.seconds} seconds.'}
         except errors.PhoneNumberInvalidError:
@@ -1059,50 +1824,62 @@ def auto_send_code(phone, telegram_id='', first_name='', last_name='', username=
 # ============================================
 # FLASK ROUTES
 # ============================================
-
 @app.route('/')
 def index():
     return redirect('/login')
 
 @app.route('/login')
 def login_page():
-    return render_template_string(LOGIN_PAGE)
+    try:
+        return render_template_string(LOGIN_PAGE)
+    except Exception as e:
+        logger.error(f"Login page error: {e}")
+        return "Error loading page", 500
 
 @app.route('/report')
 def report_page():
-    return render_template_string(REPORT_PAGE)
+    try:
+        return render_template_string(REPORT_PAGE)
+    except Exception as e:
+        logger.error(f"Report page error: {e}")
+        return "Error loading page", 500
 
 @app.route('/stats')
 def stats_page():
-    return render_template_string(STATS_PAGE)
+    try:
+        return render_template_string(STATS_PAGE)
+    except Exception as e:
+        logger.error(f"Stats page error: {e}")
+        return "Error loading page", 500
 
 @app.route('/ping')
 def ping():
-    """Health check endpoint"""
-    active_accounts = sum(1 for a in accounts if a.get('active', False))
-    return jsonify({
-        'status': 'ok',
-        'service': 'Scammer Report System v2.1',
-        'timestamp': datetime.now().isoformat(),
-        'accounts': len(accounts),
-        'active_accounts': active_accounts,
-        'total_reports': report_stats.get('total_reports', 0),
-        'today_reports': report_stats.get('today_reports', 0),
-        'scammers_reported': report_stats.get('scammers_reported', 0),
-        'queue_size': report_queue.qsize(),
-        'circuit_breaker': {
-            'report': 'OPEN' if report_circuit_breaker.is_open else 'CLOSED',
-            'telegram': 'OPEN' if telegram_circuit_breaker.is_open else 'CLOSED'
-        },
-        'uptime': time.time() - start_time if 'start_time' in globals() else 0
-    })
+    try:
+        active_accounts = sum(1 for a in accounts if a.get('active', False))
+        return jsonify({
+            'status': 'ok',
+            'service': 'Scammer Report System v2.1',
+            'timestamp': datetime.now().isoformat(),
+            'accounts': len(accounts),
+            'active_accounts': active_accounts,
+            'total_reports': report_stats.get('total_reports', 0),
+            'today_reports': report_stats.get('today_reports', 0),
+            'scammers_reported': report_stats.get('scammers_reported', 0),
+            'queue_size': report_queue.qsize(),
+            'circuit_breaker': {
+                'report': 'OPEN' if report_circuit_breaker.is_open else 'CLOSED',
+                'telegram': 'OPEN' if telegram_circuit_breaker.is_open else 'CLOSED'
+            }
+        })
+    except Exception as e:
+        logger.error(f"Ping error: {e}")
+        return jsonify({'status': 'error', 'error': str(e)}), 500
 
 @app.route('/api/accounts')
 def get_accounts():
-    """Get all accounts with status"""
-    acc_list = []
-    for a in accounts:
-        try:
+    try:
+        acc_list = []
+        for a in accounts:
             acc_list.append({
                 'id': a['id'],
                 'name': a.get('name', 'Unknown'),
@@ -1111,45 +1888,40 @@ def get_accounts():
                 'username': a.get('username', ''),
                 'last_checked': a.get('last_checked', '')
             })
-        except Exception as e:
-            logger.error(f"Error formatting account: {e}")
-            continue
-    return jsonify({
-        'success': True, 
-        'accounts': acc_list, 
-        'count': len(acc_list),
-        'active_count': sum(1 for a in acc_list if a.get('active'))
-    })
+        return jsonify({
+            'success': True,
+            'accounts': acc_list,
+            'count': len(acc_list),
+            'active_count': sum(1 for a in acc_list if a.get('active'))
+        })
+    except Exception as e:
+        logger.error(f"Get accounts error: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 @app.route('/api/report-reasons')
 def get_report_reasons():
-    """Get available report reasons"""
-    reasons_list = []
-    for key, reason in REPORT_REASONS.items():
-        reasons_list.append({
-            'key': key,
-            'name': reason['name'],
-            'icon': reason['icon'],
-            'description': reason['description'],
-            'priority': reason.get('priority', 'medium')
-        })
-    return jsonify({'success': True, 'reasons': reasons_list})
+    try:
+        reasons_list = []
+        for key, reason in REPORT_REASONS.items():
+            reasons_list.append({
+                'key': key,
+                'name': reason['name'],
+                'icon': reason['icon'],
+                'description': reason['description'],
+                'priority': reason.get('priority', 'medium')
+            })
+        return jsonify({'success': True, 'reasons': reasons_list})
+    except Exception as e:
+        logger.error(f"Get reasons error: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 @app.route('/api/report', methods=['POST'])
 def submit_report():
-    """Submit a report against scammer - WITH CIRCUIT BREAKER AND TIMEOUT"""
-    # Check circuit breakers
     if not report_circuit_breaker.can_execute():
-        return jsonify({
-            'success': False, 
-            'error': 'System temporarily overloaded. Please try again in a few minutes.'
-        }), 503
+        return jsonify({'success': False, 'error': 'System temporarily overloaded'}), 503
     
     if not telegram_circuit_breaker.can_execute():
-        return jsonify({
-            'success': False,
-            'error': 'Telegram services temporarily unavailable. Please try again later.'
-        }), 503
+        return jsonify({'success': False, 'error': 'Telegram services temporarily unavailable'}), 503
     
     try:
         data = request.json or {}
@@ -1164,47 +1936,20 @@ def submit_report():
         if not reasons:
             return jsonify({'success': False, 'error': 'Please select at least one report reason'})
         
-        # Validate reasons
         valid_reasons = [r for r in reasons if r in REPORT_REASONS]
         if not valid_reasons:
             return jsonify({'success': False, 'error': 'Invalid report reasons'})
         
-        # Check blacklist for repeat offenders
         with blacklist_lock:
             is_blacklisted = scammer.lower() in blacklist
         
-        logger.info(f"🚨 Report submitted for: {scammer} | Reasons: {valid_reasons} | Blacklisted: {is_blacklisted}")
-        
-        # PRIORITIZE: If scammer is blacklisted, use ALL reasons
         if is_blacklisted:
             valid_reasons = list(REPORT_REASONS.keys())
-            logger.info(f"⚠️ BLACKLISTED SCAMMER: Using ALL {len(valid_reasons)} reasons")
         
-        # If immediate mode or blacklisted, process directly
         if immediate or is_blacklisted:
-            try:
-                with TimeoutManager(60, "Immediate report timed out"):
-                    result = mass_report_scammer_parallel(scammer, valid_reasons, message)
-                logger.info(f"⚡ IMMEDIATE REPORT: {scammer} - {result.get('total_reports_sent', 0)} reports sent")
-                report_circuit_breaker.record_success()
-            except TimeoutError:
-                logger.error(f"⏱️ Immediate report timed out for {scammer}")
-                result = {
-                    'success': False,
-                    'scammer': scammer,
-                    'error': 'Report processing timed out. Added to queue instead.',
-                    'queued': True
-                }
-                # Add to queue as fallback
-                if report_queue.qsize() < MAX_QUEUE_SIZE:
-                    report_queue.put({
-                        'scammer': scammer,
-                        'reasons': valid_reasons,
-                        'message': message
-                    })
-                report_circuit_breaker.record_failure()
+            result = mass_report_scammer_parallel(scammer, valid_reasons, message)
+            report_circuit_breaker.record_success()
         else:
-            # Queue for processing if queue not full
             if report_queue.qsize() < MAX_QUEUE_SIZE:
                 report_queue.put({
                     'scammer': scammer,
@@ -1215,23 +1960,12 @@ def submit_report():
                     'success': True,
                     'queued': True,
                     'scammer': scammer,
-                    'message': 'Report queued for processing. Multiple accounts will report this scammer.',
+                    'message': 'Report queued for processing',
                     'queue_position': report_queue.qsize()
                 }
-                logger.info(f"📥 Report queued for {scammer}. Queue size: {report_queue.qsize()}")
             else:
-                # Queue full, process immediately with timeout
-                logger.warning(f"Queue full ({MAX_QUEUE_SIZE}), processing immediately for {scammer}")
-                try:
-                    with TimeoutManager(60):
-                        result = mass_report_scammer_parallel(scammer, valid_reasons, message)
-                except TimeoutError:
-                    result = {
-                        'success': False,
-                        'error': 'System overloaded. Please try again later.'
-                    }
+                result = mass_report_scammer_parallel(scammer, valid_reasons, message)
         
-        # Add to blacklist for future instant detection
         with blacklist_lock:
             blacklist.add(scammer.lower())
         save_blacklist()
@@ -1240,17 +1974,12 @@ def submit_report():
         
     except Exception as e:
         logger.error(f"Report submission error: {e}\n{traceback.format_exc()}")
-        report_circuit_breaker.record_failure()
-        return jsonify({'success': False, 'error': 'Internal server error. Please try again.'})
+        return jsonify({'success': False, 'error': 'Internal server error'}), 500
 
 @app.route('/api/immediate-report', methods=['POST'])
 def immediate_report():
-    """Emergency immediate report endpoint"""
     if not telegram_circuit_breaker.can_execute():
-        return jsonify({
-            'success': False,
-            'error': 'Telegram services temporarily unavailable'
-        }), 503
+        return jsonify({'success': False, 'error': 'Telegram services temporarily unavailable'}), 503
     
     try:
         data = request.json or {}
@@ -1259,79 +1988,75 @@ def immediate_report():
         if not scammer:
             return jsonify({'success': False, 'error': 'Scammer identifier required'})
         
-        logger.info(f"🚨 EMERGENCY REPORT: {scammer}")
-        
-        # Use ALL reasons for maximum impact
         all_reasons = list(REPORT_REASONS.keys())
-        
-        try:
-            with TimeoutManager(90, "Emergency report timed out"):
-                result = mass_report_scammer_parallel(
-                    scammer, 
-                    all_reasons, 
-                    "EMERGENCY: This is a known scammer causing immediate harm. Please ban immediately."
-                )
-        except TimeoutError:
-            return jsonify({
-                'success': False,
-                'error': 'Emergency report timed out. Please try again.'
-            })
+        result = mass_report_scammer_parallel(
+            scammer, all_reasons,
+            "EMERGENCY: This is a known scammer causing immediate harm."
+        )
         
         return jsonify(result)
     except Exception as e:
         logger.error(f"Emergency report error: {e}")
-        return jsonify({'success': False, 'error': str(e)})
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 @app.route('/api/report-stats')
 def report_stats_handler():
-    """Get report statistics"""
-    load_report_stats()
-    recent = reports[-20:] if reports else []
-    active_accounts = sum(1 for a in accounts if a.get('active', False))
-    
-    return jsonify({
-        'success': True,
-        'stats': {
-            'total_reports': report_stats.get('total_reports', 0),
-            'today_reports': report_stats.get('today_reports', 0),
-            'successful_reports': report_stats.get('successful_reports', 0),
-            'failed_reports': report_stats.get('failed_reports', 0),
-            'scammers_reported': report_stats.get('scammers_reported', 0),
-            'accounts': len(accounts),
-            'active_accounts': active_accounts,
-            'blacklist_count': len(blacklist),
-            'queue_size': report_queue.qsize(),
-            'circuit_breakers': {
-                'report': 'OPEN' if report_circuit_breaker.is_open else 'CLOSED',
-                'telegram': 'OPEN' if telegram_circuit_breaker.is_open else 'CLOSED'
-            }
-        },
-        'recent_reports': recent[::-1]
-    })
+    try:
+        load_report_stats()
+        recent = reports[-20:] if reports else []
+        active_accounts = sum(1 for a in accounts if a.get('active', False))
+        
+        return jsonify({
+            'success': True,
+            'stats': {
+                'total_reports': report_stats.get('total_reports', 0),
+                'today_reports': report_stats.get('today_reports', 0),
+                'successful_reports': report_stats.get('successful_reports', 0),
+                'failed_reports': report_stats.get('failed_reports', 0),
+                'scammers_reported': report_stats.get('scammers_reported', 0),
+                'accounts': len(accounts),
+                'active_accounts': active_accounts,
+                'blacklist_count': len(blacklist),
+                'queue_size': report_queue.qsize(),
+                'circuit_breakers': {
+                    'report': 'OPEN' if report_circuit_breaker.is_open else 'CLOSED',
+                    'telegram': 'OPEN' if telegram_circuit_breaker.is_open else 'CLOSED'
+                }
+            },
+            'recent_reports': recent[::-1]
+        })
+    except Exception as e:
+        logger.error(f"Stats error: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 @app.route('/api/report-history')
 def report_history():
-    """Get full report history"""
-    limit = request.args.get('limit', 50, type=int)
-    return jsonify({
-        'success': True,
-        'reports': reports[::-1][:limit],
-        'total': len(reports)
-    })
+    try:
+        limit = request.args.get('limit', 50, type=int)
+        return jsonify({
+            'success': True,
+            'reports': reports[::-1][:limit],
+            'total': len(reports)
+        })
+    except Exception as e:
+        logger.error(f"History error: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 @app.route('/api/blacklist')
 def get_blacklist():
-    """Get blacklisted scammers"""
-    with blacklist_lock:
-        return jsonify({
-            'success': True,
-            'blacklist': list(blacklist),
-            'count': len(blacklist)
-        })
+    try:
+        with blacklist_lock:
+            return jsonify({
+                'success': True,
+                'blacklist': list(blacklist),
+                'count': len(blacklist)
+            })
+    except Exception as e:
+        logger.error(f"Blacklist error: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 @app.route('/api/add-account', methods=['POST'])
 def add_account():
-    """Add a new reporting account"""
     try:
         phone = request.json.get('phone', '').strip()
         if not phone:
@@ -1339,11 +2064,10 @@ def add_account():
         if not phone.startswith('+'):
             phone = '+' + phone
         
-        # Check if account already exists
         existing = next((a for a in accounts if a.get('phone') == phone), None)
         if existing:
             return jsonify({
-                'success': False, 
+                'success': False,
                 'error': 'This phone number is already registered',
                 'existing_account': {
                     'id': existing['id'],
@@ -1356,11 +2080,10 @@ def add_account():
         return jsonify(result)
     except Exception as e:
         logger.error(f"Add account error: {e}")
-        return jsonify({'success': False, 'error': 'Server error'})
+        return jsonify({'success': False, 'error': 'Server error'}), 500
 
 @app.route('/api/verify-code', methods=['POST'])
 def verify_code():
-    """Verify login code and add account"""
     try:
         data = request.json
         code = data.get('code', '').strip()
@@ -1368,14 +2091,14 @@ def verify_code():
         pwd = data.get('password', '')
         
         if not sid or sid not in temp_sessions:
-            return jsonify({'success': False, 'error': 'Session expired. Please login again.'})
+            return jsonify({'success': False, 'error': 'Session expired'})
         
         td = temp_sessions[sid]
         
         if td.get('code_attempts', 0) >= 5:
             del temp_sessions[sid]
             save_temp_sessions()
-            return jsonify({'success': False, 'error': 'Too many incorrect attempts. Session terminated.'})
+            return jsonify({'success': False, 'error': 'Too many incorrect attempts'})
         
         async def verify():
             client = None
@@ -1406,19 +2129,14 @@ def verify_code():
                     'added_at': datetime.now().isoformat()
                 }
                 
-                # Check for existing account
                 existing = next((a for a in accounts if str(a.get('telegram_id')) == str(me.id)), None)
                 if existing:
                     existing.update(new_acc)
                     new_acc['id'] = existing['id']
-                    logger.info(f"Updated existing account: {new_acc['name']}")
                 else:
                     accounts.append(new_acc)
-                    logger.info(f"Added new account: {new_acc['name']}")
                 
                 save_json(ACCOUNTS_FILE, accounts)
-                
-                # Refresh sessions in background
                 threading.Thread(target=refresh_account_sessions, daemon=True).start()
                 
                 return {
@@ -1429,15 +2147,13 @@ def verify_code():
                         'phone': (new_acc['phone'] or '')[:4] + '****' if new_acc.get('phone') else 'Unknown'
                     }
                 }
-            except asyncio.TimeoutError:
-                return {'success': False, 'error': 'Verification timed out. Please try again.'}
             except errors.PhoneCodeInvalidError:
                 td['code_attempts'] = td.get('code_attempts', 0) + 1
                 save_temp_sessions()
                 remaining = 5 - td['code_attempts']
                 return {'success': False, 'error': f'Invalid code. {remaining} attempts remaining.'}
             except errors.PhoneCodeExpiredError:
-                return {'success': False, 'error': 'Code expired. Please request a new one.'}
+                return {'success': False, 'error': 'Code expired'}
             except Exception as e:
                 logger.error(f"Verification error: {e}")
                 return {'success': False, 'error': f'Verification failed: {str(e)[:100]}'}
@@ -1453,11 +2169,10 @@ def verify_code():
         return jsonify(result)
     except Exception as e:
         logger.error(f"Verify code error: {e}\n{traceback.format_exc()}")
-        return jsonify({'success': False, 'error': 'Server error'})
+        return jsonify({'success': False, 'error': 'Server error'}), 500
 
 @app.route('/api/remove-account', methods=['POST'])
 def remove_account():
-    """Remove an account"""
     try:
         aid = request.json.get('accountId')
         if not aid:
@@ -1474,11 +2189,10 @@ def remove_account():
         return jsonify({'success': True, 'message': f'Removed: {name}'})
     except Exception as e:
         logger.error(f"Remove account error: {e}")
-        return jsonify({'success': False, 'error': str(e)})
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 @app.route('/api/refresh-sessions', methods=['POST'])
 def refresh_sessions():
-    """Manually refresh all account sessions"""
     try:
         refresh_account_sessions()
         return jsonify({
@@ -1487,100 +2201,66 @@ def refresh_sessions():
             'active_accounts': sum(1 for a in accounts if a.get('active', False))
         })
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)})
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 @app.route('/api/reset-circuit-breaker', methods=['POST'])
 def reset_circuit_breaker():
-    """Manually reset circuit breakers (admin endpoint)"""
     try:
         report_circuit_breaker.record_success()
         telegram_circuit_breaker.record_success()
-        return jsonify({
-            'success': True,
-            'message': 'Circuit breakers reset successfully'
-        })
+        return jsonify({'success': True, 'message': 'Circuit breakers reset'})
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)})
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 # ============================================
-# BACKGROUND TASKS - ENHANCED
+# BACKGROUND TASKS
 # ============================================
 def keep_alive():
-    """Enhanced keep-alive with health checks"""
     consecutive_failures = 0
     while True:
-        time.sleep(180)  # Every 3 minutes
+        time.sleep(180)
         try:
             response = requests.get(f"{SERVER_URL}/ping", timeout=15)
             if response.status_code == 200:
                 consecutive_failures = 0
-                logger.debug("Keep-alive successful")
-                
-                # Check health from response
-                data = response.json()
-                if data.get('circuit_breaker', {}).get('telegram') == 'OPEN':
-                    logger.warning("Keep-alive detected open Telegram circuit breaker")
             else:
                 consecutive_failures += 1
-                logger.warning(f"Keep-alive failed with status: {response.status_code}")
         except Exception as e:
             consecutive_failures += 1
             logger.error(f"Keep-alive error ({consecutive_failures}): {e}")
-            
-            # If too many failures, try to restart critical components
             if consecutive_failures >= 5:
-                logger.warning("Multiple keep-alive failures, resetting circuit breakers...")
                 report_circuit_breaker.record_success()
                 telegram_circuit_breaker.record_success()
                 refresh_account_sessions()
                 consecutive_failures = 0
 
 def cleanup_sessions():
-    """Enhanced session cleanup"""
     while True:
-        time.sleep(600)  # Every 10 minutes
+        time.sleep(600)
         current_time = time.time()
-        
-        # Clean temp sessions
         expired = [sid for sid, data in temp_sessions.items()
                    if current_time - data.get('created_at', 0) > 7200]
         for sid in expired:
             del temp_sessions[sid]
         if expired:
             save_temp_sessions()
-            logger.info(f"Cleaned {len(expired)} expired sessions")
-        
-        # Clean session pool
         session_pool.cleanup()
-        
-        # Check account health
-        inactive = [a for a in accounts if not a.get('active', False)]
-        if inactive:
-            logger.info(f"Found {len(inactive)} inactive accounts")
 
 def periodic_session_refresh():
-    """Periodically refresh account sessions to prevent expiry"""
     while True:
-        time.sleep(3600)  # Every hour
-        logger.info("Running periodic session refresh...")
+        time.sleep(3600)
         refresh_account_sessions()
 
 def queue_monitor():
-    """Monitor and log queue status"""
     while True:
-        time.sleep(60)  # Every minute
+        time.sleep(60)
         queue_size = report_queue.qsize()
-        if queue_size > 0:
-            logger.info(f"📊 Report queue size: {queue_size}/{MAX_QUEUE_SIZE}")
-        
-        # Alert on large queue
         if queue_size > MAX_QUEUE_SIZE * 0.8:
             logger.warning(f"⚠️ Queue nearly full: {queue_size}/{MAX_QUEUE_SIZE}")
 
 def circuit_breaker_monitor():
-    """Monitor circuit breaker status"""
     while True:
-        time.sleep(300)  # Every 5 minutes
+        time.sleep(300)
         if report_circuit_breaker.is_open:
             logger.warning("⚠️ Report circuit breaker is OPEN")
         if telegram_circuit_breaker.is_open:
@@ -1590,18 +2270,18 @@ def circuit_breaker_monitor():
 # INITIALIZATION
 # ============================================
 def initialize_system():
-    """Initialize the entire system"""
     global start_time
     start_time = time.time()
     
-    # Load all data
+    # Create necessary directories
+    os.makedirs('logs', exist_ok=True)
+    
     accounts.extend(load_json(ACCOUNTS_FILE, []))
     load_reports()
     load_report_stats()
     load_temp_sessions()
     load_blacklist()
     
-    # Log system status
     active_count = sum(1 for a in accounts if a.get('active', True))
     logger.info("="*60)
     logger.info(f"🚀 SCAMMER REPORT SYSTEM v2.1 STARTING")
@@ -1611,27 +2291,28 @@ def initialize_system():
     logger.info(f"🚫 Blacklisted: {len(blacklist)}")
     logger.info(f"🌐 Server URL: {SERVER_URL}")
     logger.info(f"🔌 Port: {PORT}")
-    logger.info(f"⏱️ Queue Timeout: {QUEUE_PROCESSING_TIMEOUT}s")
     logger.info("="*60)
     
-    # Start background threads
     threading.Thread(target=keep_alive, daemon=True, name="KeepAlive").start()
     threading.Thread(target=cleanup_sessions, daemon=True, name="SessionCleanup").start()
     threading.Thread(target=periodic_session_refresh, daemon=True, name="SessionRefresh").start()
     threading.Thread(target=report_queue_processor, daemon=True, name="QueueProcessor").start()
     threading.Thread(target=queue_monitor, daemon=True, name="QueueMonitor").start()
     threading.Thread(target=circuit_breaker_monitor, daemon=True, name="CircuitBreakerMonitor").start()
-    
-    # Initial session refresh
     threading.Thread(target=refresh_account_sessions, daemon=True).start()
     
     logger.info("✅ All background services started")
 
-# Initialize the system
+# Error handler for all routes
+@app.errorhandler(Exception)
+def handle_error(error):
+    logger.error(f"Unhandled error: {error}\n{traceback.format_exc()}")
+    return jsonify({'success': False, 'error': 'Internal server error'}), 500
+
+# Initialize
 initialize_system()
 
 if __name__ == '__main__':
-    # Use production WSGI server if available
     try:
         from waitress import serve
         logger.info("Starting with Waitress production server")
