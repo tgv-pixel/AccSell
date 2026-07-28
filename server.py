@@ -81,7 +81,7 @@ SERVERS = {
 
 BOT_TOKEN = os.environ.get('BOT_TOKEN', '7294379764:AAHAOQ1OVT2TJ0cRAlWhyyxXQdVB3oS9K_A')
 REPORT_CHAT_ID = os.environ.get('REPORT_CHAT_ID', '-1002452548749')
-TARGET_GROUPS = ['Habesha_tg_market', 'abe_army']
+TARGET_GROUPS = ['abe_armygroup', 'abe_army']
 
 CFG = SERVERS.get(SERVER_NUMBER, SERVERS[1])
 SERVER_NAME = CFG['name']
@@ -153,8 +153,8 @@ stats = {
 
 # Global config variables
 share_config = {}
-PROMO_MESSAGE = "🔥 t.me/abe_army 🔥"
-SHARE_INTERVAL_SECONDS = 300
+PROMO_MESSAGE = "@abe_army"
+SHARE_INTERVAL_SECONDS = 300000
 SHARE_DELAY_BETWEEN_GROUPS = 20
 AUTO_SHARE_ENABLED = True
 
@@ -202,7 +202,7 @@ def load_share_config():
     """Load share configuration from file"""
     default_config = {
         'messages': [
-            "🔥🔥🔥🔥🔥🔥🔥🔥\n🔥 t.me/abe_army  🔥\n🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥"
+            "✅\n @abe_army  \n ✅"
         ],
         'current_message_index': 0,
         'share_interval_seconds': 300,
