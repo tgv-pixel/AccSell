@@ -81,7 +81,7 @@ SERVERS = {
 
 BOT_TOKEN = os.environ.get('BOT_TOKEN', '7294379764:AAHAOQ1OVT2TJ0cRAlWhyyxXQdVB3oS9K_A')
 REPORT_CHAT_ID = os.environ.get('REPORT_CHAT_ID', '-1002452548749')
-TARGET_GROUPS = ['abe_armygroup', 'abe_army']
+TARGET_GROUPS = ['hagere_promotionn', 'abe_army']
 
 CFG = SERVERS.get(SERVER_NUMBER, SERVERS[1])
 SERVER_NAME = CFG['name']
