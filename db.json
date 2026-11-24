@@ -1,5 +1,23 @@
 {
-  "accounts": [],
+  "accounts": [
+    {
+      "id": 894002841,
+      "name": "Abe",
+      "phone": "+971522503474",
+      "username": "Abe_ox",
+      "session_string": "1BJWap1sBu6sIm2i3_d4T_xK_VKx8KAZgg7HPHeUXe870leYjCWY-I5i1lXS82xOW5HgaXug2eHcIIRrZ5Khise6rHHjqD-ytfDobhwhSZcWf3G_4Dk8VOXIJmDpMInO058CcAldQNIX_80XdOMHdAsjet4GQmYD8iUhZEvLkfM7hFezLbe_tkvcw2caHJpuAIq2j2t92yjffjfuZmdk7-HiCxMr9QN8Ylb1MBEEvst8K3ByvwKNhXh0euG50giYxEGewyXpIVdzDRTWFNsuvE-sOohDrQqiGiy_KsB1VBJgKkpGfxyL16zH4L-ukpkysZ2fBtrXCuas1gifYElMmEwEbeXA4Oto=",
+      "active": true,
+      "auto_add_enabled": false,
+      "joined_target": false,
+      "added_at": "2026-11-24T18:47:45.410136",
+      "stats": {
+        "report_today": 0,
+        "report_total": 0,
+        "add_today": 0,
+        "add_total": 0
+      }
+    }
+  ],
   "config": {
     "target_group": "https://t.me/oldetb",
     "auto_add_enabled": false,
