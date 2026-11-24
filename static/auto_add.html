@@ -1,0 +1,420 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Auto-Add Settings</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        }
+
+        body {
+            min-height: 100vh;
+            background: #0e1621;
+            color: #fff;
+            padding: 16px;
+        }
+
+        .container {
+            max-width: 600px;
+            margin: 0 auto;
+        }
+
+        .page-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 16px 0;
+            margin-bottom: 20px;
+            border-bottom: 1px solid #2b3945;
+        }
+
+        .page-title {
+            font-size: 1.4rem;
+            font-weight: 700;
+        }
+
+        .back-btn {
+            background: #2b3945;
+            color: #6ab2f2;
+            text-decoration: none;
+            padding: 10px 18px;
+            border-radius: 30px;
+            font-size: 0.9rem;
+            font-weight: 500;
+        }
+
+        .back-btn:hover {
+            background: #3a4a5a;
+        }
+
+        .section {
+            background: #17212b;
+            border-radius: 16px;
+            padding: 20px;
+            margin-bottom: 16px;
+            border: 1px solid #2b3945;
+        }
+
+        .section-title {
+            font-size: 1.1rem;
+            font-weight: 600;
+            margin-bottom: 16px;
+            color: #fff;
+        }
+
+        .setting-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 12px 0;
+            border-bottom: 1px solid #2b3945;
+        }
+
+        .setting-row:last-child {
+            border-bottom: none;
+        }
+
+        .setting-label {
+            font-weight: 500;
+            color: #fff;
+        }
+
+        .setting-desc {
+            font-size: 0.8rem;
+            color: #8e9fad;
+            margin-top: 2px;
+        }
+
+        .toggle-switch {
+            position: relative;
+            width: 50px;
+            height: 28px;
+            flex-shrink: 0;
+        }
+
+        .toggle-switch input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+
+        .toggle-slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: #2b3945;
+            border-radius: 28px;
+            transition: 0.3s;
+        }
+
+        .toggle-slider:before {
+            position: absolute;
+            content: "";
+            height: 22px;
+            width: 22px;
+            left: 3px;
+            bottom: 3px;
+            background: white;
+            border-radius: 50%;
+            transition: 0.3s;
+        }
+
+        input:checked + .toggle-slider {
+            background: #4c9ce0;
+        }
+
+        input:checked + .toggle-slider:before {
+            transform: translateX(22px);
+        }
+
+        select, input[type="number"] {
+            background: #242f3d;
+            border: 1px solid #2b3945;
+            border-radius: 10px;
+            padding: 10px 14px;
+            color: #fff;
+            font-size: 0.9rem;
+            outline: none;
+        }
+
+        select {
+            min-width: 200px;
+        }
+
+        input[type="number"] {
+            width: 100px;
+            text-align: center;
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 12px;
+        }
+
+        .stat-item {
+            background: #242f3d;
+            border-radius: 12px;
+            padding: 16px;
+            text-align: center;
+        }
+
+        .stat-item .value {
+            font-size: 1.8rem;
+            font-weight: 700;
+            color: #4c9ce0;
+        }
+
+        .stat-item .label {
+            font-size: 0.8rem;
+            color: #8e9fad;
+            margin-top: 4px;
+        }
+
+        .save-btn {
+            width: 100%;
+            padding: 14px;
+            background: linear-gradient(135deg, #8a2be2, #ff1493);
+            color: white;
+            border: none;
+            border-radius: 14px;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            margin-top: 16px;
+        }
+
+        .save-btn:hover {
+            opacity: 0.9;
+        }
+
+        .save-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .toast {
+            position: fixed;
+            bottom: 24px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: #17212b;
+            color: white;
+            padding: 12px 24px;
+            border-radius: 30px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+            z-index: 1000;
+            display: none;
+        }
+
+        .toast.show {
+            display: block;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="page-header">
+            <span class="page-title">⚙️ Auto-Add Settings</span>
+            <div style="display: flex; gap: 8px;">
+                <a href="/dashboard" class="back-btn">💬 Chats</a>
+                <a href="/devices" class="back-btn">📱 Devices</a>
+            </div>
+        </div>
+
+        <!-- Stats -->
+        <div class="section">
+            <div class="section-title">📊 Today's Stats</div>
+            <div class="stats-grid">
+                <div class="stat-item">
+                    <div class="value" id="todayAdded">0</div>
+                    <div class="label">Today Added</div>
+                </div>
+                <div class="stat-item">
+                    <div class="value" id="totalAdded">0</div>
+                    <div class="label">Total Added</div>
+                </div>
+                <div class="stat-item">
+                    <div class="value" id="activeWorkers">0</div>
+                    <div class="label">Active Workers</div>
+                </div>
+                <div class="stat-item">
+                    <div class="value" id="serverName">---</div>
+                    <div class="label">Server</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Account Settings -->
+        <div class="section" id="accountSettings" style="display: none;">
+            <div class="section-title">🔧 Account Settings</div>
+            
+            <div class="setting-row">
+                <div>
+                    <div class="setting-label">Auto-Add Enabled</div>
+                    <div class="setting-desc">Automatically add users to target groups</div>
+                </div>
+                <label class="toggle-switch">
+                    <input type="checkbox" id="autoAddEnabled" onchange="saveSettings()">
+                    <span class="toggle-slider"></span>
+                </label>
+            </div>
+
+            <div class="setting-row">
+                <div>
+                    <div class="setting-label">Delay (seconds)</div>
+                    <div class="setting-desc">Wait time between adding users (min 30s)</div>
+                </div>
+                <input type="number" id="delaySeconds" value="30" min="30" max="300" onchange="saveSettings()">
+            </div>
+
+            <div class="setting-row">
+                <div>
+                    <div class="setting-label">Target Group</div>
+                    <div class="setting-desc">Group to add users to</div>
+                </div>
+                <select id="targetGroup" onchange="saveSettings()">
+                    <option value="Abe_armygroup">Abe_armygroup</option>
+                    <option value="abe_army">abe_army</option>
+                </select>
+            </div>
+
+            <div class="setting-row">
+                <div>
+                    <div class="setting-label">Account Status</div>
+                    <div class="setting-desc" id="accountStatus">---</div>
+                </div>
+            </div>
+
+            <button class="save-btn" onclick="saveSettings()">💾 Save Settings</button>
+        </div>
+
+        <!-- Account Selector -->
+        <div class="section">
+            <div class="section-title">📱 Select Account</div>
+            <select id="accountSelect" onchange="loadAccountSettings()" style="width: 100%;">
+                <option value="">-- Select an account --</option>
+            </select>
+        </div>
+    </div>
+
+    <div class="toast" id="toast"></div>
+
+<script>
+    var accounts = [];
+    var currentSettings = {};
+    var saveTimeout = null;
+
+    function showToast(msg) {
+        var t = document.getElementById('toast');
+        t.textContent = msg;
+        t.className = 'toast show';
+        setTimeout(function() { t.classList.remove('show'); }, 3000);
+    }
+
+    async function loadData() {
+        try {
+            // Load stats
+            var statsRes = await fetch('/api/auto-add-stats');
+            var statsData = await statsRes.json();
+            if (statsData.success) {
+                document.getElementById('todayAdded').textContent = statsData.added_today || 0;
+                document.getElementById('totalAdded').textContent = statsData.total_added || 0;
+                document.getElementById('activeWorkers').textContent = statsData.active_workers || 0;
+                document.getElementById('serverName').textContent = statsData.server_name || '---';
+            }
+
+            // Load accounts
+            var accRes = await fetch('/api/accounts');
+            var accData = await accRes.json();
+            if (accData.success) {
+                accounts = accData.accounts || [];
+                var select = document.getElementById('accountSelect');
+                select.innerHTML = '<option value="">-- Select an account --</option>';
+                accounts.forEach(function(acc) {
+                    select.innerHTML += '<option value="' + acc.id + '">' + 
+                        (acc.name || 'Unknown') + ' (' + (acc.phone || 'N/A') + ')</option>';
+                });
+            }
+        } catch (err) {
+            console.error('Load data error:', err);
+        }
+    }
+
+    async function loadAccountSettings() {
+        var accountId = document.getElementById('accountSelect').value;
+        if (!accountId) {
+            document.getElementById('accountSettings').style.display = 'none';
+            return;
+        }
+
+        try {
+            var res = await fetch('/api/auto-add-settings?accountId=' + accountId);
+            var data = await res.json();
+            
+            if (data.success) {
+                currentSettings = data.settings;
+                document.getElementById('accountSettings').style.display = 'block';
+                document.getElementById('autoAddEnabled').checked = currentSettings.enabled;
+                document.getElementById('delaySeconds').value = currentSettings.delay_seconds || 30;
+                document.getElementById('targetGroup').value = currentSettings.target_group || 'Abe_armygroup';
+                
+                var statusText = currentSettings.is_running ? '🟢 Auto-Add Running' : 
+                    (currentSettings.enabled ? '🟡 Enabled (Starting...)' : '⚪ Disabled');
+                document.getElementById('accountStatus').textContent = statusText;
+            }
+        } catch (err) {
+            console.error('Load settings error:', err);
+        }
+    }
+
+    async function saveSettings() {
+        var accountId = document.getElementById('accountSelect').value;
+        if (!accountId) return;
+        
+        // Debounce
+        if (saveTimeout) clearTimeout(saveTimeout);
+        saveTimeout = setTimeout(async function() {
+            try {
+                var settings = {
+                    accountId: accountId,
+                    enabled: document.getElementById('autoAddEnabled').checked,
+                    delay_seconds: parseInt(document.getElementById('delaySeconds').value) || 30,
+                    target_group: document.getElementById('targetGroup').value
+                };
+                
+                var res = await fetch('/api/auto-add-settings', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(settings)
+                });
+                
+                var data = await res.json();
+                if (data.success) {
+                    showToast('✅ Settings saved');
+                    await loadAccountSettings();
+                } else {
+                    showToast('❌ Failed to save');
+                }
+            } catch (err) {
+                console.error('Save error:', err);
+                showToast('❌ Connection error');
+            }
+        }, 500);
+    }
+
+    window.addEventListener('load', function() {
+        loadData();
+        setInterval(loadData, 30000);
+    });
+</script>
+</body>
+</html>
