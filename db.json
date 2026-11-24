@@ -48,9 +48,11 @@
   "stats": {
     "reports_today": 1,
     "reports_total": 1,
-    "added_today": 0,
-    "added_total": 0,
+    "added_today": 1,
+    "added_total": 1,
     "last_date": "2026-11-24"
   },
-  "added_user_ids": []
+  "added_user_ids": [
+    8424542368
+  ]
 }
