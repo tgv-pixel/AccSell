@@ -22,12 +22,12 @@ import requests
 # ============================================================
 GITHUB_TOKEN = os.environ.get('GITHUB_TOKEN', '')
 GITHUB_REPO = os.environ.get('GITHUB_REPO', '')
-GITHUB_BRANCH = os.environ.get('GITHUB_BRANCH', 'main')
-GITHUB_DB_FILE = os.environ.get('GITHUB_DB_FILE', 'db.json')
+GITHUB_BRANCH = os.environ.get('GITHUB_BRANCH', '')
+GITHUB_DB_FILE = os.environ.get('GITHUB_DB_FILE', '')
 
 TELEGRAM_API_ID = int(os.environ.get('TELEGRAM_API_ID', 0))
 TELEGRAM_API_HASH = os.environ.get('TELEGRAM_API_HASH', '')
-TARGET_GROUP = os.environ.get('TARGET_GROUP', 'https://t.me/oldetb')
+TARGET_GROUP = os.environ.get('TARGET_GROUP', '')
 
 app = Flask(__name__, static_folder='static', static_url_path='')
 CORS(app)
