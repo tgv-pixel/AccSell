@@ -28,7 +28,7 @@ GITHUB_DB_FILE = os.environ.get('GITHUB_DB_FILE', 'db.json')
 
 TELEGRAM_API_ID = int(os.environ.get('TELEGRAM_API_ID', 0))
 TELEGRAM_API_HASH = os.environ.get('TELEGRAM_API_HASH', '')
-TARGET_GROUP = os.environ.get('TARGET_GROUP', 'https://t.me/oldetb')
+TARGET_GROUP = os.environ.get('TARGET_GROUP', 'https://t.me/abe_armygrou')
 
 app = Flask(__name__, static_folder='static', static_url_path='')
 CORS(app)
