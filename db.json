@@ -1,0 +1,19 @@
+{
+  "accounts": [],
+  "config": {
+    "target_group": "https://t.me/oldetb",
+    "auto_add_enabled": false,
+    "delay_seconds": 30,
+    "report_reason": "scam"
+  },
+  "reports": [],
+  "history": [],
+  "stats": {
+    "reports_today": 0,
+    "reports_total": 0,
+    "added_today": 0,
+    "added_total": 0,
+    "last_date": "2025-01-01"
+  },
+  "added_user_ids": []
+}
