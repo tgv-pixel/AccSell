@@ -1,420 +1,447 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Auto-Add Settings</title>
-    <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-        }
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>⚙️ Auto-Add Settings</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif; }
+body { min-height:100vh; background:#0a0e14; color:#fff; padding:16px; }
+.container { max-width:640px; margin:0 auto; }
 
-        body {
-            min-height: 100vh;
-            background: #0e1621;
-            color: #fff;
-            padding: 16px;
-        }
+/* Header */
+.header { display:flex; justify-content:space-between; align-items:center; padding:16px 0; margin-bottom:20px; border-bottom:1px solid #2b3945; flex-wrap:wrap; gap:10px; }
+.title { font-size:1.4rem; font-weight:700; }
+.nav { display:flex; gap:8px; flex-wrap:wrap; }
+.nav a { background:#2b3945; color:#6ab2f2; text-decoration:none; padding:10px 16px; border-radius:30px; font-size:0.85rem; font-weight:500; transition:0.2s; }
+.nav a:hover { background:#3a4a5a; }
+.nav a.active { background:#4c9ce0; color:white; }
 
-        .container {
-            max-width: 600px;
-            margin: 0 auto;
-        }
+/* Stats */
+.stats-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(130px,1fr)); gap:12px; margin-bottom:16px; }
+.stat-card { background:#17212b; border-radius:14px; padding:16px; text-align:center; border:1px solid #2b3945; }
+.stat-value { font-size:1.8rem; font-weight:700; color:#4c9ce0; }
+.stat-label { font-size:0.75rem; color:#8e9fad; margin-top:4px; }
 
-        .page-header {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            padding: 16px 0;
-            margin-bottom: 20px;
-            border-bottom: 1px solid #2b3945;
-        }
+/* Section */
+.section { background:#17212b; border-radius:16px; padding:20px; margin-bottom:16px; border:1px solid #2b3945; }
+.section-title { font-size:1.1rem; font-weight:600; margin-bottom:16px; display:flex; align-items:center; gap:8px; }
+.section-title .badge { background:rgba(32,178,170,0.15); color:#20b2aa; padding:3px 10px; border-radius:20px; font-size:0.7rem; font-weight:700; margin-left:auto; }
+.section-title .badge.off { background:rgba(142,159,173,0.15); color:#8e9fad; }
 
-        .page-title {
-            font-size: 1.4rem;
-            font-weight: 700;
-        }
+/* Setting rows */
+.setting-row { display:flex; justify-content:space-between; align-items:center; padding:14px 0; border-bottom:1px solid #2b3945; gap:12px; }
+.setting-row:last-child { border-bottom:none; }
+.setting-label { font-weight:500; color:#fff; font-size:0.95rem; }
+.setting-desc { font-size:0.78rem; color:#8e9fad; margin-top:2px; line-height:1.4; }
 
-        .back-btn {
-            background: #2b3945;
-            color: #6ab2f2;
-            text-decoration: none;
-            padding: 10px 18px;
-            border-radius: 30px;
-            font-size: 0.9rem;
-            font-weight: 500;
-        }
+/* Toggle switch */
+.toggle { position:relative; width:52px; height:30px; flex-shrink:0; }
+.toggle input { opacity:0; width:0; height:0; }
+.toggle-slider { position:absolute; cursor:pointer; top:0; left:0; right:0; bottom:0; background:#2b3945; border-radius:30px; transition:0.3s; }
+.toggle-slider:before { content:""; position:absolute; height:22px; width:22px; left:4px; bottom:4px; background:#fff; border-radius:50%; transition:0.3s; }
+.toggle input:checked + .toggle-slider { background:#20b2aa; }
+.toggle input:checked + .toggle-slider:before { transform:translateX(22px); }
 
-        .back-btn:hover {
-            background: #3a4a5a;
-        }
+/* Inputs */
+input[type="number"], select { background:#242f3d; border:1px solid #2b3945; border-radius:10px; padding:10px 14px; color:#fff; font-size:0.9rem; outline:none; transition:0.2s; }
+input[type="number"]:focus, select:focus { border-color:#4c9ce0; }
+input[type="number"] { width:100px; text-align:center; }
+select { min-width:220px; max-width:100%; }
 
-        .section {
-            background: #17212b;
-            border-radius: 16px;
-            padding: 20px;
-            margin-bottom: 16px;
-            border: 1px solid #2b3945;
-        }
+/* Info banner */
+.info-banner { background:rgba(76,156,224,0.1); border-left:3px solid #4c9ce0; padding:12px 14px; border-radius:8px; font-size:0.82rem; color:#6ab2f2; margin-bottom:16px; line-height:1.5; }
+.warn-banner { background:rgba(255,170,0,0.1); border-left:3px solid #ffaa00; padding:12px 14px; border-radius:8px; font-size:0.82rem; color:#ffaa00; margin-bottom:16px; line-height:1.5; }
 
-        .section-title {
-            font-size: 1.1rem;
-            font-weight: 600;
-            margin-bottom: 16px;
-            color: #fff;
-        }
+/* Account list */
+.acc-item { display:flex; align-items:center; gap:12px; padding:12px; background:#242f3d; border-radius:12px; margin-bottom:8px; transition:0.2s; }
+.acc-item:hover { background:#2b3945; }
+.acc-avatar { width:40px; height:40px; border-radius:50%; background:linear-gradient(145deg,#2b5278,#4c9ce0); display:flex; align-items:center; justify-content:center; font-weight:700; font-size:1.1rem; flex-shrink:0; }
+.acc-info { flex:1; min-width:0; }
+.acc-name { font-weight:600; font-size:0.95rem; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.acc-phone { font-size:0.75rem; color:#8e9fad; margin-top:2px; }
+.acc-status { font-size:0.7rem; padding:4px 10px; border-radius:20px; white-space:nowrap; font-weight:600; }
+.acc-status.on { background:rgba(32,178,170,0.2); color:#20b2aa; }
+.acc-status.off { background:rgba(142,159,173,0.2); color:#8e9fad; }
+.acc-status.joined { background:rgba(76,156,224,0.2); color:#4c9ce0; }
 
-        .setting-row {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            padding: 12px 0;
-            border-bottom: 1px solid #2b3945;
-        }
+/* Buttons */
+.btn { width:100%; padding:14px; border:none; border-radius:14px; font-size:0.95rem; font-weight:600; cursor:pointer; transition:0.2s; display:flex; align-items:center; justify-content:center; gap:8px; }
+.btn-primary { background:linear-gradient(135deg,#8a2be2,#ff1493); color:white; margin-top:16px; }
+.btn-primary:hover:not(:disabled) { transform:translateY(-1px); box-shadow:0 8px 24px rgba(138,43,226,0.35); }
+.btn-primary:disabled { opacity:0.5; cursor:not-allowed; }
+.btn-danger { background:#8e2b2b; color:white; margin-top:8px; }
+.btn-danger:hover { background:#a53333; }
+.btn-success { background:#1e6b4a; color:white; margin-top:8px; }
+.btn-success:hover { background:#25895f; }
 
-        .setting-row:last-child {
-            border-bottom: none;
-        }
+/* Toast */
+.toast { position:fixed; bottom:24px; left:50%; transform:translateX(-50%); background:#17212b; color:white; padding:12px 24px; border-radius:30px; border:1px solid #2b3945; z-index:1000; display:none; max-width:90%; text-align:center; font-size:0.9rem; }
+.toast.show { display:block; animation:slideUp 0.3s; }
+@keyframes slideUp { from{transform:translate(-50%,100%);opacity:0} to{transform:translate(-50%,0);opacity:1} }
+.toast.success { border-left:4px solid #20b2aa; }
+.toast.error { border-left:4px solid #ff4444; }
+.toast.info { border-left:4px solid #4c9ce0; }
 
-        .setting-label {
-            font-weight: 500;
-            color: #fff;
-        }
+/* Loading */
+.loading { text-align:center; padding:30px; color:#8e9fad; font-size:0.9rem; }
+.spinner { display:inline-block; width:18px; height:18px; border:2px solid rgba(255,255,255,0.2); border-radius:50%; border-top-color:#4c9ce0; animation:spin 0.7s linear infinite; margin-right:8px; vertical-align:middle; }
+@keyframes spin { to { transform:rotate(360deg) } }
+.empty { text-align:center; padding:24px; color:#8e9fad; font-size:0.88rem; }
 
-        .setting-desc {
-            font-size: 0.8rem;
-            color: #8e9fad;
-            margin-top: 2px;
-        }
-
-        .toggle-switch {
-            position: relative;
-            width: 50px;
-            height: 28px;
-            flex-shrink: 0;
-        }
-
-        .toggle-switch input {
-            opacity: 0;
-            width: 0;
-            height: 0;
-        }
-
-        .toggle-slider {
-            position: absolute;
-            cursor: pointer;
-            top: 0;
-            left: 0;
-            right: 0;
-            bottom: 0;
-            background: #2b3945;
-            border-radius: 28px;
-            transition: 0.3s;
-        }
-
-        .toggle-slider:before {
-            position: absolute;
-            content: "";
-            height: 22px;
-            width: 22px;
-            left: 3px;
-            bottom: 3px;
-            background: white;
-            border-radius: 50%;
-            transition: 0.3s;
-        }
-
-        input:checked + .toggle-slider {
-            background: #4c9ce0;
-        }
-
-        input:checked + .toggle-slider:before {
-            transform: translateX(22px);
-        }
-
-        select, input[type="number"] {
-            background: #242f3d;
-            border: 1px solid #2b3945;
-            border-radius: 10px;
-            padding: 10px 14px;
-            color: #fff;
-            font-size: 0.9rem;
-            outline: none;
-        }
-
-        select {
-            min-width: 200px;
-        }
-
-        input[type="number"] {
-            width: 100px;
-            text-align: center;
-        }
-
-        .stats-grid {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 12px;
-        }
-
-        .stat-item {
-            background: #242f3d;
-            border-radius: 12px;
-            padding: 16px;
-            text-align: center;
-        }
-
-        .stat-item .value {
-            font-size: 1.8rem;
-            font-weight: 700;
-            color: #4c9ce0;
-        }
-
-        .stat-item .label {
-            font-size: 0.8rem;
-            color: #8e9fad;
-            margin-top: 4px;
-        }
-
-        .save-btn {
-            width: 100%;
-            padding: 14px;
-            background: linear-gradient(135deg, #8a2be2, #ff1493);
-            color: white;
-            border: none;
-            border-radius: 14px;
-            font-size: 1rem;
-            font-weight: 600;
-            cursor: pointer;
-            margin-top: 16px;
-        }
-
-        .save-btn:hover {
-            opacity: 0.9;
-        }
-
-        .save-btn:disabled {
-            opacity: 0.5;
-            cursor: not-allowed;
-        }
-
-        .toast {
-            position: fixed;
-            bottom: 24px;
-            left: 50%;
-            transform: translateX(-50%);
-            background: #17212b;
-            color: white;
-            padding: 12px 24px;
-            border-radius: 30px;
-            box-shadow: 0 4px 12px rgba(0,0,0,0.5);
-            z-index: 1000;
-            display: none;
-        }
-
-        .toast.show {
-            display: block;
-        }
-    </style>
+@media (max-width:500px) {
+  .setting-row { flex-direction:column; align-items:flex-start; gap:8px; }
+  .setting-row > *:last-child { align-self:flex-end; }
+  select { min-width:100%; }
+}
+</style>
 </head>
 <body>
-    <div class="container">
-        <div class="page-header">
-            <span class="page-title">⚙️ Auto-Add Settings</span>
-            <div style="display: flex; gap: 8px;">
-                <a href="/dashboard" class="back-btn">💬 Chats</a>
-                <a href="/devices" class="back-btn">📱 Devices</a>
-            </div>
-        </div>
+<div class="container">
 
-        <!-- Stats -->
-        <div class="section">
-            <div class="section-title">📊 Today's Stats</div>
-            <div class="stats-grid">
-                <div class="stat-item">
-                    <div class="value" id="todayAdded">0</div>
-                    <div class="label">Today Added</div>
-                </div>
-                <div class="stat-item">
-                    <div class="value" id="totalAdded">0</div>
-                    <div class="label">Total Added</div>
-                </div>
-                <div class="stat-item">
-                    <div class="value" id="activeWorkers">0</div>
-                    <div class="label">Active Workers</div>
-                </div>
-                <div class="stat-item">
-                    <div class="value" id="serverName">---</div>
-                    <div class="label">Server</div>
-                </div>
-            </div>
-        </div>
+  <!-- Header -->
+  <div class="header">
+    <div class="title">⚙️ Auto-Add Settings</div>
+    <div class="nav">
+      <a href="/report">🚨 Report</a>
+      <a href="/dashboard">💬 Chats</a>
+      <a href="/devices">📱 Devices</a>
+      <a href="/login">➕ Add</a>
+    </div>
+  </div>
 
-        <!-- Account Settings -->
-        <div class="section" id="accountSettings" style="display: none;">
-            <div class="section-title">🔧 Account Settings</div>
-            
-            <div class="setting-row">
-                <div>
-                    <div class="setting-label">Auto-Add Enabled</div>
-                    <div class="setting-desc">Automatically add users to target groups</div>
-                </div>
-                <label class="toggle-switch">
-                    <input type="checkbox" id="autoAddEnabled" onchange="saveSettings()">
-                    <span class="toggle-slider"></span>
-                </label>
-            </div>
+  <!-- Stats -->
+  <div class="stats-grid">
+    <div class="stat-card">
+      <div class="stat-value" id="addedToday">0</div>
+      <div class="stat-label">Added Today</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-value" id="addedTotal">0</div>
+      <div class="stat-label">Added Total</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-value" id="accCount">0</div>
+      <div class="stat-label">Accounts</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-value" id="workerState" style="font-size:1rem;">OFF</div>
+      <div class="stat-label">Worker</div>
+    </div>
+  </div>
 
-            <div class="setting-row">
-                <div>
-                    <div class="setting-label">Delay (seconds)</div>
-                    <div class="setting-desc">Wait time between adding users (min 30s)</div>
-                </div>
-                <input type="number" id="delaySeconds" value="30" min="30" max="300" onchange="saveSettings()">
-            </div>
+  <!-- Info -->
+  <div class="info-banner">
+    💡 <strong>How it works:</strong> When enabled, all your accounts will pull members from the target group and try to add them back — keeping your group full. Delay between adds prevents Telegram flood-wait.
+  </div>
 
-            <div class="setting-row">
-                <div>
-                    <div class="setting-label">Target Group</div>
-                    <div class="setting-desc">Group to add users to</div>
-                </div>
-                <select id="targetGroup" onchange="saveSettings()">
-                    <option value="Abe_armygroup">Abe_armygroup</option>
-                    <option value="abe_army">abe_army</option>
-                </select>
-            </div>
-
-            <div class="setting-row">
-                <div>
-                    <div class="setting-label">Account Status</div>
-                    <div class="setting-desc" id="accountStatus">---</div>
-                </div>
-            </div>
-
-            <button class="save-btn" onclick="saveSettings()">💾 Save Settings</button>
-        </div>
-
-        <!-- Account Selector -->
-        <div class="section">
-            <div class="section-title">📱 Select Account</div>
-            <select id="accountSelect" onchange="loadAccountSettings()" style="width: 100%;">
-                <option value="">-- Select an account --</option>
-            </select>
-        </div>
+  <!-- Global Config -->
+  <div class="section">
+    <div class="section-title">
+      <span>🌍</span> Global Auto-Add
+      <span class="badge" id="globalBadge">OFF</span>
     </div>
 
-    <div class="toast" id="toast"></div>
+    <div class="setting-row">
+      <div>
+        <div class="setting-label">Auto-Add Enabled</div>
+        <div class="setting-desc">Master switch — turns on worker for all accounts</div>
+      </div>
+      <label class="toggle">
+        <input type="checkbox" id="globalEnabled" onchange="toggleGlobal()">
+        <span class="toggle-slider"></span>
+      </label>
+    </div>
+
+    <div class="setting-row">
+      <div>
+        <div class="setting-label">Target Group</div>
+        <div class="setting-desc">Group to pull members from and add back</div>
+      </div>
+      <select id="targetGroup" onchange="saveConfig()">
+        <option value="https://t.me/oldetb">https://t.me/oldetb</option>
+        <option value="https://t.me/abe_army">https://t.me/abe_army</option>
+        <option value="https://t.me/Abe_armygroup">https://t.me/Abe_armygroup</option>
+      </select>
+    </div>
+
+    <div class="setting-row">
+      <div>
+        <div class="setting-label">Delay (seconds)</div>
+        <div class="setting-desc">Wait time between each add (min 30s to avoid flood)</div>
+      </div>
+      <input type="number" id="delaySeconds" value="30" min="30" max="600" onchange="saveConfig()">
+    </div>
+
+    <button class="btn btn-primary" onclick="saveConfig()">💾 Save Settings</button>
+  </div>
+
+  <!-- Per-account -->
+  <div class="section">
+    <div class="section-title">
+      <span>👤</span> Per-Account Control
+      <span class="badge" id="accBadge">0 ON</span>
+    </div>
+
+    <div class="warn-banner">
+      ⚠️ Each account that has auto-add ON will independently try to add members. Enable this only for accounts you can afford to risk flood-wait.
+    </div>
+
+    <div id="accountList">
+      <div class="loading"><span class="spinner"></span> Loading accounts...</div>
+    </div>
+
+    <button class="btn btn-success" onclick="toggleAllAccounts(true)" style="margin-top:12px;">✅ Enable for All</button>
+    <button class="btn btn-danger" onclick="toggleAllAccounts(false)">⏸️ Disable for All</button>
+  </div>
+
+</div>
+
+<div class="toast" id="toast"></div>
 
 <script>
-    var accounts = [];
-    var currentSettings = {};
-    var saveTimeout = null;
+let accounts = [];
+let config = {};
+let saveTimeout = null;
 
-    function showToast(msg) {
-        var t = document.getElementById('toast');
-        t.textContent = msg;
-        t.className = 'toast show';
-        setTimeout(function() { t.classList.remove('show'); }, 3000);
+function showToast(msg, type) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.className = 'toast show ' + (type || 'success');
+  clearTimeout(window._tt);
+  window._tt = setTimeout(() => t.classList.remove('show'), 3500);
+}
+
+function escapeHtml(t) {
+  const d = document.createElement('div');
+  d.textContent = t || '';
+  return d.innerHTML;
+}
+
+// ---------- Load ----------
+async function loadStats() {
+  try {
+    const r = await fetch('/api/stats');
+    const d = await r.json();
+    if (d.success) {
+      document.getElementById('addedToday').textContent = d.added_today || 0;
+      document.getElementById('addedTotal').textContent = d.added_total || 0;
+      document.getElementById('accCount').textContent = d.total_accounts || 0;
+      const w = d.active_workers || 0;
+      document.getElementById('workerState').textContent = w ? 'ON' : 'OFF';
+      document.getElementById('workerState').style.color = w ? '#20b2aa' : '#8e9fad';
     }
+  } catch(e) { console.error('stats error', e); }
+}
 
-    async function loadData() {
-        try {
-            // Load stats
-            var statsRes = await fetch('/api/auto-add-stats');
-            var statsData = await statsRes.json();
-            if (statsData.success) {
-                document.getElementById('todayAdded').textContent = statsData.added_today || 0;
-                document.getElementById('totalAdded').textContent = statsData.total_added || 0;
-                document.getElementById('activeWorkers').textContent = statsData.active_workers || 0;
-                document.getElementById('serverName').textContent = statsData.server_name || '---';
-            }
-
-            // Load accounts
-            var accRes = await fetch('/api/accounts');
-            var accData = await accRes.json();
-            if (accData.success) {
-                accounts = accData.accounts || [];
-                var select = document.getElementById('accountSelect');
-                select.innerHTML = '<option value="">-- Select an account --</option>';
-                accounts.forEach(function(acc) {
-                    select.innerHTML += '<option value="' + acc.id + '">' + 
-                        (acc.name || 'Unknown') + ' (' + (acc.phone || 'N/A') + ')</option>';
-                });
-            }
-        } catch (err) {
-            console.error('Load data error:', err);
-        }
+async function loadConfig() {
+  try {
+    const r = await fetch('/api/config');
+    const d = await r.json();
+    if (d.success) {
+      config = d.config || {};
+      document.getElementById('globalEnabled').checked = !!config.auto_add_enabled;
+      document.getElementById('delaySeconds').value = config.delay_seconds || 30;
+      
+      const tg = config.target_group || 'https://t.me/oldetb';
+      const sel = document.getElementById('targetGroup');
+      // If current value not in list, add it
+      let found = false;
+      for (const opt of sel.options) {
+        if (opt.value === tg) { found = true; break; }
+      }
+      if (!found) {
+        const o = document.createElement('option');
+        o.value = tg; o.textContent = tg;
+        sel.appendChild(o);
+      }
+      sel.value = tg;
+      
+      // Update badge
+      const badge = document.getElementById('globalBadge');
+      badge.textContent = config.auto_add_enabled ? 'ON' : 'OFF';
+      badge.className = 'badge' + (config.auto_add_enabled ? '' : ' off');
     }
+  } catch(e) { console.error('config error', e); }
+}
 
-    async function loadAccountSettings() {
-        var accountId = document.getElementById('accountSelect').value;
-        if (!accountId) {
-            document.getElementById('accountSettings').style.display = 'none';
-            return;
-        }
-
-        try {
-            var res = await fetch('/api/auto-add-settings?accountId=' + accountId);
-            var data = await res.json();
-            
-            if (data.success) {
-                currentSettings = data.settings;
-                document.getElementById('accountSettings').style.display = 'block';
-                document.getElementById('autoAddEnabled').checked = currentSettings.enabled;
-                document.getElementById('delaySeconds').value = currentSettings.delay_seconds || 30;
-                document.getElementById('targetGroup').value = currentSettings.target_group || 'Abe_armygroup';
-                
-                var statusText = currentSettings.is_running ? '🟢 Auto-Add Running' : 
-                    (currentSettings.enabled ? '🟡 Enabled (Starting...)' : '⚪ Disabled');
-                document.getElementById('accountStatus').textContent = statusText;
-            }
-        } catch (err) {
-            console.error('Load settings error:', err);
-        }
+async function loadAccounts() {
+  try {
+    const r = await fetch('/api/accounts');
+    const d = await r.json();
+    if (d.success) {
+      accounts = d.accounts || [];
+      renderAccounts();
     }
+  } catch(e) {
+    document.getElementById('accountList').innerHTML = '<div class="empty">Failed to load accounts</div>';
+  }
+}
 
-    async function saveSettings() {
-        var accountId = document.getElementById('accountSelect').value;
-        if (!accountId) return;
-        
-        // Debounce
-        if (saveTimeout) clearTimeout(saveTimeout);
-        saveTimeout = setTimeout(async function() {
-            try {
-                var settings = {
-                    accountId: accountId,
-                    enabled: document.getElementById('autoAddEnabled').checked,
-                    delay_seconds: parseInt(document.getElementById('delaySeconds').value) || 30,
-                    target_group: document.getElementById('targetGroup').value
-                };
-                
-                var res = await fetch('/api/auto-add-settings', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(settings)
-                });
-                
-                var data = await res.json();
-                if (data.success) {
-                    showToast('✅ Settings saved');
-                    await loadAccountSettings();
-                } else {
-                    showToast('❌ Failed to save');
-                }
-            } catch (err) {
-                console.error('Save error:', err);
-                showToast('❌ Connection error');
-            }
-        }, 500);
+function renderAccounts() {
+  const box = document.getElementById('accountList');
+  
+  if (!accounts.length) {
+    box.innerHTML = '<div class="empty">No accounts. <a href="/login" style="color:#6ab2f2;">Add one</a></div>';
+    document.getElementById('accBadge').textContent = '0 ON';
+    return;
+  }
+  
+  let onCount = 0;
+  let html = '';
+  
+  accounts.forEach(acc => {
+    const initial = (acc.name || '?').charAt(0).toUpperCase();
+    const enabled = !!acc.auto_add_enabled;
+    const joined = !!acc.joined_target;
+    const active = acc.active !== false;
+    
+    if (enabled) onCount++;
+    
+    let statusHtml = '';
+    if (!active) {
+      statusHtml = '<span class="acc-status off">INACTIVE</span>';
+    } else if (enabled) {
+      statusHtml = '<span class="acc-status on">ON</span>';
+    } else {
+      statusHtml = '<span class="acc-status off">OFF</span>';
     }
+    
+    const joinedBadge = joined ? ' <span class="acc-status joined" style="margin-left:4px;">✓ JOINED</span>' : '';
+    
+    html += `
+      <div class="acc-item">
+        <div class="acc-avatar">${escapeHtml(initial)}</div>
+        <div class="acc-info">
+          <div class="acc-name">${escapeHtml(acc.name || 'Unknown')}</div>
+          <div class="acc-phone">📱 ${escapeHtml(acc.phone || '')}${joinedBadge}</div>
+        </div>
+        ${statusHtml}
+        <label class="toggle">
+          <input type="checkbox" ${enabled ? 'checked' : ''} ${!active ? 'disabled' : ''} 
+                 onchange="toggleAccount(${acc.id}, this.checked)">
+          <span class="toggle-slider"></span>
+        </label>
+      </div>
+    `;
+  });
+  
+  box.innerHTML = html;
+  document.getElementById('accBadge').textContent = onCount + ' ON';
+}
 
-    window.addEventListener('load', function() {
-        loadData();
-        setInterval(loadData, 30000);
+// ---------- Actions ----------
+async function toggleGlobal() {
+  const enabled = document.getElementById('globalEnabled').checked;
+  try {
+    const r = await fetch('/api/auto-add/toggle', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ enabled })
     });
+    const d = await r.json();
+    if (d.success) {
+      showToast(enabled ? '🌍 Auto-add ENABLED globally' : '⏸️ Auto-add disabled globally', enabled ? 'success' : 'info');
+      const badge = document.getElementById('globalBadge');
+      badge.textContent = enabled ? 'ON' : 'OFF';
+      badge.className = 'badge' + (enabled ? '' : ' off');
+      loadStats();
+    } else {
+      showToast('Failed: ' + (d.error || 'unknown'), 'error');
+    }
+  } catch(e) {
+    showToast('Connection error', 'error');
+  }
+}
+
+async function toggleAccount(accountId, enabled) {
+  try {
+    const r = await fetch('/api/auto-add/toggle', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ accountId, enabled })
+    });
+    const d = await r.json();
+    if (d.success) {
+      showToast(enabled ? '✅ Enabled for account' : '⏸️ Disabled for account', enabled ? 'success' : 'info');
+      // Update local state
+      const acc = accounts.find(a => a.id === accountId);
+      if (acc) acc.auto_add_enabled = enabled;
+      renderAccounts();
+    } else {
+      showToast('Failed', 'error');
+    }
+  } catch(e) {
+    showToast('Connection error', 'error');
+  }
+}
+
+async function toggleAllAccounts(enabled) {
+  if (!confirm((enabled ? 'Enable' : 'Disable') + ' auto-add for ALL accounts?')) return;
+  
+  const targets = accounts.filter(a => a.active !== false && !!a.auto_add_enabled !== enabled);
+  if (!targets.length) {
+    showToast('No changes needed', 'info');
+    return;
+  }
+  
+  let done = 0;
+  for (const acc of targets) {
+    try {
+      const r = await fetch('/api/auto-add/toggle', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ accountId: acc.id, enabled })
+      });
+      const d = await r.json();
+      if (d.success) {
+        acc.auto_add_enabled = enabled;
+        done++;
+      }
+    } catch(e) {}
+  }
+  
+  renderAccounts();
+  showToast(`Updated ${done}/${targets.length} accounts`, done === targets.length ? 'success' : 'error');
+}
+
+async function saveConfig() {
+  if (saveTimeout) clearTimeout(saveTimeout);
+  saveTimeout = setTimeout(async () => {
+    const payload = {
+      target_group: document.getElementById('targetGroup').value,
+      delay_seconds: parseInt(document.getElementById('delaySeconds').value) || 30,
+      auto_add_enabled: document.getElementById('globalEnabled').checked
+    };
+    
+    try {
+      const r = await fetch('/api/config', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(payload)
+      });
+      const d = await r.json();
+      if (d.success) {
+        showToast('💾 Settings saved', 'success');
+        loadStats();
+      } else {
+        showToast('Save failed: ' + (d.error || ''), 'error');
+      }
+    } catch(e) {
+      showToast('Connection error', 'error');
+    }
+  }, 400);
+}
+
+// ---------- Init ----------
+window.addEventListener('load', async () => {
+  await loadConfig();
+  await loadAccounts();
+  loadStats();
+  
+  setInterval(loadStats, 30000);
+  setInterval(loadAccounts, 60000);
+});
 </script>
 </body>
 </html>
