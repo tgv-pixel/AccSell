@@ -20,7 +20,7 @@
   ],
   "config": {
     "target_group": "https://t.me/oldetb",
-    "auto_add_enabled": false,
+    "auto_add_enabled": true,
     "delay_seconds": 30,
     "report_reason": "scam"
   },
