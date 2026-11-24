@@ -1,0 +1,398 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>🚨 Report Scammer</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif; }
+body { min-height:100vh; background:#0a0e14; color:#fff; padding:16px; }
+.container { max-width:640px; margin:0 auto; }
+
+/* Header */
+.header { display:flex; justify-content:space-between; align-items:center; padding:16px 0; margin-bottom:16px; border-bottom:1px solid #2b3945; flex-wrap:wrap; gap:10px; }
+.title { font-size:1.4rem; font-weight:700; }
+.nav { display:flex; gap:8px; }
+.nav a { background:#2b3945; color:#6ab2f2; text-decoration:none; padding:8px 14px; border-radius:30px; font-size:0.82rem; font-weight:500; transition:0.2s; }
+.nav a:hover { background:#3a4a5a; }
+
+/* Stats */
+.stats-bar { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin-bottom:16px; }
+.stat-card { background:#17212b; border-radius:14px; padding:14px; text-align:center; border:1px solid #2b3945; }
+.stat-value { font-size:1.7rem; font-weight:700; color:#4c9ce0; }
+.stat-label { font-size:0.72rem; color:#8e9fad; margin-top:4px; }
+.stat-value.warn { color:#ffaa00; }
+.stat-value.ok { color:#20b2aa; }
+
+/* Card */
+.card { background:#17212b; border-radius:16px; padding:22px; margin-bottom:16px; border:1px solid #2b3945; }
+.card-title { font-size:1.1rem; font-weight:600; margin-bottom:16px; display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+.danger-badge { background:rgba(255,68,68,0.15); color:#ff6b6b; padding:3px 10px; border-radius:20px; font-size:0.68rem; font-weight:700; letter-spacing:0.5px; }
+
+/* Form */
+label { display:block; font-size:0.82rem; color:#8e9fad; margin-bottom:6px; margin-top:14px; font-weight:500; }
+input, select, textarea { width:100%; background:#242f3d; border:1px solid #2b3945; border-radius:12px; padding:13px 15px; color:#fff; font-size:0.95rem; outline:none; transition:0.2s; }
+input:focus, select:focus, textarea:focus { border-color:#4c9ce0; }
+textarea { min-height:64px; resize:vertical; }
+
+/* Warning banner */
+.warning { background:rgba(255,170,0,0.1); border-left:3px solid #ffaa00; padding:12px 14px; border-radius:8px; margin-bottom:6px; font-size:0.82rem; color:#ffaa00; line-height:1.5; }
+
+/* Report button */
+.report-btn { width:100%; padding:18px; background:linear-gradient(135deg,#e04c4c,#ff1493); color:white; border:none; border-radius:14px; font-size:1.05rem; font-weight:700; cursor:pointer; margin-top:20px; letter-spacing:0.5px; transition:0.2s; display:flex; align-items:center; justify-content:center; gap:8px; }
+.report-btn:hover:not(:disabled) { transform:translateY(-2px); box-shadow:0 10px 30px rgba(224,76,76,0.4); }
+.report-btn:disabled { opacity:0.5; cursor:not-allowed; }
+
+/* Result box */
+.result-box { background:#242f3d; border-radius:12px; padding:16px; margin-top:16px; display:none; animation:fadeIn 0.3s; }
+.result-box.show { display:block; }
+@keyframes fadeIn { from{opacity:0;transform:translateY(-8px)} to{opacity:1;transform:translateY(0)} }
+.result-row { display:flex; justify-content:space-between; padding:8px 0; border-bottom:1px solid #2b3945; font-size:0.9rem; }
+.result-row:last-child { border-bottom:none; }
+.result-row .ok { color:#20b2aa; font-weight:600; }
+.result-row .fail { color:#ff6b6b; font-weight:600; }
+
+/* Recommendation card (shown after report if <3 accounts) */
+.recommend { background:linear-gradient(135deg,rgba(76,156,224,0.12),rgba(138,43,226,0.08)); border:1px solid rgba(76,156,224,0.35); border-radius:14px; padding:18px; margin-top:16px; display:none; animation:fadeIn 0.4s; }
+.recommend.show { display:block; }
+.recommend-title { font-weight:700; font-size:1rem; color:#6ab2f2; margin-bottom:8px; display:flex; align-items:center; gap:8px; }
+.recommend-body { font-size:0.85rem; color:#8e9fad; line-height:1.6; margin-bottom:12px; }
+.recommend-body strong { color:#fff; }
+.recommend-steps { background:rgba(0,0,0,0.25); border-radius:10px; padding:12px 14px; font-size:0.82rem; color:#c9d6e2; line-height:1.7; margin-bottom:12px; }
+.recommend-steps ol { padding-left:18px; }
+.recommend-steps li { margin-bottom:4px; }
+.recommend-steps li:last-child { margin-bottom:0; }
+.recommend-hint { font-size:0.78rem; color:#4c9ce0; font-style:italic; text-align:center; }
+.recommend strong.hl { color:#ffaa00; }
+
+/* Strong result */
+.result-strong { background:linear-gradient(135deg,rgba(32,178,170,0.12),rgba(32,178,170,0.05)); border:1px solid rgba(32,178,170,0.4); border-radius:14px; padding:16px; margin-top:16px; display:none; animation:fadeIn 0.4s; }
+.result-strong.show { display:block; }
+.result-strong-title { color:#20b2aa; font-weight:700; margin-bottom:6px; display:flex; align-items:center; gap:8px; }
+.result-strong-body { color:#8e9fad; font-size:0.85rem; line-height:1.6; }
+
+/* History */
+.history-item { padding:12px; background:#242f3d; border-radius:10px; margin-bottom:8px; font-size:0.82rem; }
+.history-item .row1 { display:flex; justify-content:space-between; align-items:center; margin-bottom:3px; flex-wrap:wrap; gap:6px; }
+.history-item .username { color:#ff6b6b; font-weight:600; font-size:0.9rem; }
+.history-item .count { color:#20b2aa; font-weight:600; }
+.history-item .count.partial { color:#ffaa00; }
+.history-item .time { color:#8e9fad; font-size:0.72rem; }
+
+/* Toast */
+.toast { position:fixed; bottom:24px; left:50%; transform:translateX(-50%); background:#17212b; color:white; padding:13px 24px; border-radius:30px; border:1px solid #2b3945; z-index:1000; display:none; max-width:90%; text-align:center; font-size:0.88rem; }
+.toast.show { display:block; animation:slideUp 0.3s; }
+@keyframes slideUp { from{transform:translate(-50%,100%);opacity:0} to{transform:translate(-50%,0);opacity:1} }
+.toast.success { border-left:4px solid #20b2aa; }
+.toast.error { border-left:4px solid #ff4444; }
+.toast.info { border-left:4px solid #4c9ce0; }
+
+/* Spinner */
+.spinner { display:inline-block; width:16px; height:16px; border:2px solid rgba(255,255,255,0.3); border-radius:50%; border-top-color:white; animation:spin 0.6s linear infinite; }
+@keyframes spin { to { transform:rotate(360deg) } }
+.empty { text-align:center; color:#8e9fad; padding:20px; font-size:0.85rem; }
+
+@media (max-width:480px) {
+  .stats-bar { grid-template-columns:1fr 1fr 1fr; }
+  .stat-value { font-size:1.4rem; }
+}
+</style>
+</head>
+<body>
+<div class="container">
+
+  <!-- Header -->
+  <div class="header">
+    <div class="title">🚨 Report Scammer</div>
+    <div class="nav">
+      <a href="/dashboard">💬 Chats</a>
+      <a href="/devices">📱 Devices</a>
+    </div>
+  </div>
+
+  <!-- Stats -->
+  <div class="stats-bar">
+    <div class="stat-card">
+      <div class="stat-value" id="accountsCount">0</div>
+      <div class="stat-label">Active Accounts</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-value" id="reportsToday">0</div>
+      <div class="stat-label">Reports Today</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-value" id="reportsTotal">0</div>
+      <div class="stat-label">Total Reports</div>
+    </div>
+  </div>
+
+  <!-- Report form -->
+  <div class="card">
+    <div class="card-title">
+      <span>🎯</span> Mass Report Target
+      <span class="danger-badge">MASS REPORT</span>
+    </div>
+
+    <div class="warning">
+      ⚡ This will report the target from <strong>ALL</strong> your accounts simultaneously. More accounts = faster Telegram ban.
+    </div>
+
+    <label>Username or Link</label>
+    <input id="username" placeholder="@username or https://t.me/username" autocomplete="off">
+
+    <label>Report Reason</label>
+    <select id="reason">
+      <option value="scam" selected>Scam / Fraud</option>
+      <option value="spam">Spam</option>
+      <option value="fake">Fake Account</option>
+      <option value="violence">Violence</option>
+      <option value="pornography">Pornography</option>
+      <option value="child_abuse">Child Abuse</option>
+      <option value="illegal_drugs">Illegal Drugs</option>
+      <option value="personal_details">Personal Details Leak</option>
+      <option value="copyright">Copyright Violation</option>
+    </select>
+
+    <label>Additional Message (optional)</label>
+    <textarea id="message" placeholder="Describe the scam briefly..."></textarea>
+
+    <button class="report-btn" id="reportBtn" onclick="doReport()">
+      🚨 REPORT NOW WITH ALL ACCOUNTS
+    </button>
+
+    <!-- Result summary -->
+    <div class="result-box" id="resultBox"></div>
+
+    <!-- Recommendation (shown when account count is low) -->
+    <div class="recommend" id="recommendBox">
+      <div class="recommend-title">
+        <span>💡</span> Get Better Results — Add More Accounts
+      </div>
+      <div class="recommend-body">
+        You currently have <strong class="hl" id="recCount">0</strong> accounts.
+        Telegram responds much faster to mass reports from <strong>3 or more distinct accounts</strong>.
+        Each account adds independent signal strength to the ban decision.
+      </div>
+      <div class="recommend-steps">
+        <ol>
+          <li>Open <strong>/login</strong> in another tab</li>
+          <li>Add Telegram accounts you own (2–10 recommended)</li>
+          <li>Come back here and report again</li>
+        </ol>
+      </div>
+      <div class="recommend-hint">
+        More accounts → higher success rate → faster ban ⚡
+      </div>
+    </div>
+
+    <!-- Strong result card -->
+    <div class="result-strong" id="strongBox">
+      <div class="result-strong-title">
+        <span>✅</span> Strong Report Sent
+      </div>
+      <div class="result-strong-body" id="strongBody">
+        Your report was sent from multiple accounts. Telegram will review and likely ban the target within hours.
+      </div>
+    </div>
+  </div>
+
+  <!-- History -->
+  <div class="card">
+    <div class="card-title"><span>📋</span> Recent Reports</div>
+    <div id="history"><div class="empty">Loading...</div></div>
+  </div>
+
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+let accountCount = 0;
+
+function showToast(msg, type) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.className = 'toast show ' + (type || 'success');
+  clearTimeout(window._tt);
+  window._tt = setTimeout(() => t.classList.remove('show'), 4000);
+}
+
+function escapeHtml(t) {
+  const d = document.createElement('div');
+  d.textContent = t || '';
+  return d.innerHTML;
+}
+
+// ---------- Load stats ----------
+async function loadStats() {
+  try {
+    const r = await fetch('/api/stats');
+    const d = await r.json();
+    if (d.success) {
+      accountCount = d.total_accounts || 0;
+      
+      const accEl = document.getElementById('accountsCount');
+      accEl.textContent = accountCount;
+      accEl.className = 'stat-value ' + (accountCount < 3 ? 'warn' : 'ok');
+      
+      document.getElementById('reportsToday').textContent = d.reports_today || 0;
+      document.getElementById('reportsTotal').textContent = d.reports_total || 0;
+      
+      // Update recommendation count
+      document.getElementById('recCount').textContent = accountCount;
+    }
+  } catch(e) {}
+}
+
+// ---------- Load history ----------
+async function loadHistory() {
+  try {
+    const r = await fetch('/api/report-history?limit=10');
+    const d = await r.json();
+    const box = document.getElementById('history');
+    if (!d.success || !d.history.length) {
+      box.innerHTML = '<div class="empty">No reports yet</div>';
+      return;
+    }
+    box.innerHTML = d.history.map(h => {
+      const ratio = h.total_accounts ? (h.successful / h.total_accounts) : 0;
+      const cls = ratio >= 0.8 ? '' : 'partial';
+      return `
+        <div class="history-item">
+          <div class="row1">
+            <span class="username">@${escapeHtml(h.username)}</span>
+            <span class="count ${cls}">${h.successful}/${h.total_accounts}</span>
+          </div>
+          <div class="time">${new Date(h.completed_at).toLocaleString()} • ${escapeHtml(h.reason)}</div>
+        </div>
+      `;
+    }).join('');
+  } catch(e) {}
+}
+
+// ---------- Report ----------
+async function doReport() {
+  const input = document.getElementById('username');
+  const reason = document.getElementById('reason').value;
+  const message = document.getElementById('message').value.trim();
+  const btn = document.getElementById('reportBtn');
+  const resultBox = document.getElementById('resultBox');
+  const recommendBox = document.getElementById('recommendBox');
+  const strongBox = document.getElementById('strongBox');
+  
+  let username = input.value.trim();
+  if (!username) {
+    showToast('Enter a username', 'error');
+    input.focus();
+    return;
+  }
+  
+  // Normalize: strip t.me/ and @
+  if (username.includes('t.me/')) {
+    username = username.split('t.me/')[1].split('?')[0].split('/')[0];
+  }
+  username = username.replace(/^@/, '').trim();
+  
+  if (!username) {
+    showToast('Invalid username format', 'error');
+    return;
+  }
+  
+  if (accountCount === 0) {
+    showToast('❌ No accounts. Add one first.', 'error');
+    return;
+  }
+  
+  if (!confirm(`🚨 Report @${username} from ${accountCount} account${accountCount > 1 ? 's' : ''}?\n\nThis cannot be undone.`)) {
+    return;
+  }
+  
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span> Reporting from all accounts...';
+  resultBox.classList.remove('show');
+  recommendBox.classList.remove('show');
+  strongBox.classList.remove('show');
+  
+  try {
+    const r = await fetch('/api/report-scammer', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ username, reason, message })
+    });
+    const d = await r.json();
+    
+    if (!d.success) {
+      showToast('❌ ' + (d.error || 'Report failed'), 'error');
+      return;
+    }
+    
+    // Show result summary
+    resultBox.innerHTML = `
+      <div class="result-row"><span>Target</span><span>@${escapeHtml(d.username)}</span></div>
+      <div class="result-row"><span>Accounts used</span><span>${d.total_accounts}</span></div>
+      <div class="result-row"><span>Successful reports</span><span class="ok">${d.successful}</span></div>
+      <div class="result-row"><span>Failed reports</span><span class="fail">${d.failed}</span></div>
+    `;
+    resultBox.classList.add('show');
+    
+    showToast(`✅ Reported @${d.username} from ${d.successful}/${d.total_accounts} accounts`, 'success');
+    
+    // Decide which recommendation to show
+    const ratio = d.total_accounts ? d.successful / d.total_accounts : 0;
+    
+    if (d.total_accounts < 3) {
+      // Low account count → show recommendation
+      document.getElementById('recCount').textContent = d.total_accounts;
+      recommendBox.classList.add('show');
+    } else if (ratio >= 0.8 && d.successful >= 3) {
+      // Strong report → show success
+      document.getElementById('strongBody').innerHTML =
+        `Your report was sent from <strong>${d.successful}</strong> accounts. ` +
+        `Telegram will review and likely ban <strong>@${escapeHtml(d.username)}</strong> within hours. ` +
+        `Keep adding accounts for even stronger signals.`;
+      strongBox.classList.add('show');
+    } else if (ratio < 0.5) {
+      // Many failures → suggest more accounts
+      document.getElementById('recCount').textContent = d.total_accounts;
+      recommendBox.classList.add('show');
+    } else {
+      // Moderate → show success
+      document.getElementById('strongBody').innerHTML =
+        `Report sent from <strong>${d.successful}/${d.total_accounts}</strong> accounts. ` +
+        `Adding more accounts will strengthen future reports.`;
+      strongBox.classList.add('show');
+    }
+    
+    // Clear input for next report
+    input.value = '';
+    document.getElementById('message').value = '';
+    
+    loadStats();
+    loadHistory();
+    
+  } catch(e) {
+    showToast('❌ Connection error', 'error');
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = '🚨 REPORT NOW WITH ALL ACCOUNTS';
+  }
+}
+
+// ---------- Init ----------
+window.addEventListener('load', () => {
+  loadStats();
+  loadHistory();
+  setInterval(loadStats, 30000);
+  setInterval(loadHistory, 60000);
+});
+
+// Allow Enter key to submit
+document.getElementById('username').addEventListener('keypress', e => {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    doReport();
+  }
+});
+</script>
+</body>
+</html>

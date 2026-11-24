@@ -1,0 +1,794 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Share Control Panel - Telegram Auto Share</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        .header {
+            text-align: center;
+            color: white;
+            margin-bottom: 30px;
+        }
+
+        .header h1 {
+            font-size: 2.5em;
+            margin-bottom: 10px;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.2);
+        }
+
+        .header p {
+            font-size: 1.1em;
+            opacity: 0.9;
+        }
+
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
+            gap: 20px;
+            margin-bottom: 20px;
+        }
+
+        .card {
+            background: white;
+            border-radius: 15px;
+            padding: 25px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.1);
+            transition: transform 0.3s ease;
+        }
+
+        .card:hover {
+            transform: translateY(-5px);
+        }
+
+        .card h2 {
+            color: #333;
+            margin-bottom: 20px;
+            font-size: 1.5em;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .card h2 .icon {
+            font-size: 1.3em;
+        }
+
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        .form-group label {
+            display: block;
+            margin-bottom: 8px;
+            color: #555;
+            font-weight: 500;
+        }
+
+        .form-group input,
+        .form-group select,
+        .form-group textarea {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            font-size: 14px;
+            transition: border-color 0.3s;
+        }
+
+        .form-group input:focus,
+        .form-group select:focus,
+        .form-group textarea:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        .form-group textarea {
+            min-height: 100px;
+            resize: vertical;
+            font-family: inherit;
+        }
+
+        .btn {
+            padding: 12px 24px;
+            border: none;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+
+        .btn-primary:hover {
+            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+            transform: translateY(-2px);
+        }
+
+        .btn-success {
+            background: #10b981;
+            color: white;
+        }
+
+        .btn-success:hover {
+            background: #059669;
+        }
+
+        .btn-danger {
+            background: #ef4444;
+            color: white;
+        }
+
+        .btn-danger:hover {
+            background: #dc2626;
+        }
+
+        .btn-warning {
+            background: #f59e0b;
+            color: white;
+        }
+
+        .btn-warning:hover {
+            background: #d97706;
+        }
+
+        .btn-sm {
+            padding: 6px 12px;
+            font-size: 12px;
+        }
+
+        .message-list {
+            margin-bottom: 15px;
+        }
+
+        .message-item {
+            background: #f9fafb;
+            border: 1px solid #e5e7eb;
+            border-radius: 8px;
+            padding: 12px;
+            margin-bottom: 10px;
+            position: relative;
+        }
+
+        .message-item .message-text {
+            white-space: pre-wrap;
+            word-break: break-word;
+            margin-bottom: 8px;
+            font-size: 14px;
+            color: #333;
+        }
+
+        .message-item .message-actions {
+            display: flex;
+            gap: 8px;
+        }
+
+        .time-presets {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-top: 10px;
+        }
+
+        .time-preset {
+            padding: 8px 16px;
+            background: #f3f4f6;
+            border: 2px solid #e5e7eb;
+            border-radius: 20px;
+            cursor: pointer;
+            font-size: 13px;
+            transition: all 0.3s;
+        }
+
+        .time-preset:hover {
+            background: #667eea;
+            color: white;
+            border-color: #667eea;
+        }
+
+        .time-preset.active {
+            background: #667eea;
+            color: white;
+            border-color: #667eea;
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 15px;
+            margin-top: 15px;
+        }
+
+        .stat-item {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 15px;
+            border-radius: 10px;
+            text-align: center;
+        }
+
+        .stat-item .stat-value {
+            font-size: 2em;
+            font-weight: bold;
+        }
+
+        .stat-item .stat-label {
+            font-size: 0.9em;
+            opacity: 0.9;
+            margin-top: 5px;
+        }
+
+        .toggle-switch {
+            position: relative;
+            display: inline-block;
+            width: 60px;
+            height: 34px;
+        }
+
+        .toggle-switch input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+
+        .toggle-slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: #ccc;
+            transition: .4s;
+            border-radius: 34px;
+        }
+
+        .toggle-slider:before {
+            position: absolute;
+            content: "";
+            height: 26px;
+            width: 26px;
+            left: 4px;
+            bottom: 4px;
+            background-color: white;
+            transition: .4s;
+            border-radius: 50%;
+        }
+
+        input:checked + .toggle-slider {
+            background-color: #10b981;
+        }
+
+        input:checked + .toggle-slider:before {
+            transform: translateX(26px);
+        }
+
+        .alert {
+            padding: 12px;
+            border-radius: 8px;
+            margin-bottom: 15px;
+            font-size: 14px;
+        }
+
+        .alert-success {
+            background: #d1fae5;
+            color: #065f46;
+            border: 1px solid #6ee7b7;
+        }
+
+        .alert-error {
+            background: #fee2e2;
+            color: #991b1b;
+            border: 1px solid #fca5a5;
+        }
+
+        .alert-info {
+            background: #dbeafe;
+            color: #1e40af;
+            border: 1px solid #93c5fd;
+        }
+
+        .emoji-tips {
+            background: #fef3c7;
+            border: 1px solid #fcd34d;
+            border-radius: 8px;
+            padding: 12px;
+            margin-top: 10px;
+            font-size: 13px;
+            color: #92400e;
+        }
+
+        @media (max-width: 768px) {
+            .grid {
+                grid-template-columns: 1fr;
+            }
+            
+            .header h1 {
+                font-size: 1.8em;
+            }
+        }
+
+        .loading {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #667eea;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .nav-tabs {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+
+        .nav-tab {
+            padding: 10px 20px;
+            background: white;
+            border-radius: 8px;
+            cursor: pointer;
+            font-weight: 500;
+            transition: all 0.3s;
+        }
+
+        .nav-tab.active {
+            background: #667eea;
+            color: white;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🚀 Share Control Panel</h1>
+            <p>Control your auto-share settings with premium emoji support</p>
+        </div>
+
+        <div id="alert-container"></div>
+
+        <div class="grid">
+            <!-- Share Messages Card -->
+            <div class="card">
+                <h2><span class="icon">📝</span> Share Messages</h2>
+                
+                <div class="message-list" id="message-list">
+                    <!-- Messages will be loaded here -->
+                </div>
+                
+                <div class="form-group">
+                    <label>Add New Message</label>
+                    <textarea id="new-message" placeholder="Enter your message... Use premium emojis with :emoji_id: format"></textarea>
+                </div>
+                
+                <div class="emoji-tips">
+                    💡 <strong>Premium Emoji Tips:</strong><br>
+                    • Use format <code>:1234567890123456789:</code> for premium custom emojis<br>
+                    • Standard Unicode emojis work normally (😀🎉❤️)<br>
+                    • Premium users can use up to 100 custom emojis per message
+                </div>
+                
+                <div style="display: flex; gap: 10px; margin-top: 15px;">
+                    <button class="btn btn-primary" onclick="addMessage()">➕ Add Message</button>
+                    <button class="btn btn-success" onclick="saveMessages()">💾 Save All</button>
+                </div>
+                
+                <div class="form-group" style="margin-top: 15px;">
+                    <label style="display: flex; align-items: center; gap: 10px;">
+                        <span>Rotate Messages</span>
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="rotate-messages" checked onchange="updateConfig()">
+                            <span class="toggle-slider"></span>
+                        </label>
+                    </label>
+                </div>
+            </div>
+
+            <!-- Timing Control Card -->
+            <div class="card">
+                <h2><span class="icon">⏱️</span> Timing Control</h2>
+                
+                <div class="form-group">
+                    <label>Share Interval</label>
+                    <input type="number" id="share-interval" value="300" min="60" max="86400" onchange="updateIntervalDisplay()">
+                    <small style="color: #666;">Current: <span id="interval-display">5 minutes</span></small>
+                </div>
+                
+                <div class="time-presets" id="time-presets">
+                    <!-- Presets will be loaded here -->
+                </div>
+                
+                <div class="form-group" style="margin-top: 20px;">
+                    <label>Delay Between Groups (seconds)</label>
+                    <input type="number" id="delay-between" value="20" min="5" max="300" onchange="updateConfig()">
+                </div>
+                
+                <button class="btn btn-primary" onclick="saveTiming()">💾 Save Timing</button>
+            </div>
+
+            <!-- Global Controls Card -->
+            <div class="card">
+                <h2><span class="icon">🎛️</span> Global Controls</h2>
+                
+                <div class="form-group">
+                    <label style="display: flex; align-items: center; gap: 10px;">
+                        <span>Auto Share Enabled</span>
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="auto-share-enabled" checked onchange="updateConfig()">
+                            <span class="toggle-slider"></span>
+                        </label>
+                    </label>
+                </div>
+                
+                <div class="form-group">
+                    <label style="display: flex; align-items: center; gap: 10px;">
+                        <span>Use Premium Emojis</span>
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="use-premium-emojis" checked onchange="updateConfig()">
+                            <span class="toggle-slider"></span>
+                        </label>
+                    </label>
+                </div>
+                
+                <div style="display: flex; gap: 10px; margin-top: 20px;">
+                    <button class="btn btn-success" onclick="startAllShares()">▶️ Start All</button>
+                    <button class="btn btn-danger" onclick="stopAllShares()">⏹️ Stop All</button>
+                </div>
+                
+                <div style="margin-top: 20px;">
+                    <button class="btn btn-warning" onclick="sendTestMessage()">🧪 Send Test Message</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Statistics Card -->
+        <div class="card" style="margin-top: 20px;">
+            <h2><span class="icon">📊</span> Share Statistics</h2>
+            <div class="stats-grid" id="stats-grid">
+                <!-- Stats will be loaded here -->
+            </div>
+            <div style="margin-top: 15px;">
+                <button class="btn btn-sm btn-primary" onclick="refreshStats()">🔄 Refresh Stats</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = window.location.origin;
+        let currentConfig = {};
+        let messages = [];
+
+        // Load initial data
+        document.addEventListener('DOMContentLoaded', () => {
+            loadConfig();
+            loadStats();
+            loadTimePresets();
+        });
+
+        async function loadConfig() {
+            try {
+                const response = await fetch(`${API_BASE}/api/share-config`);
+                const data = await response.json();
+                
+                if (data.success) {
+                    currentConfig = data.config;
+                    messages = currentConfig.messages || [];
+                    
+                    // Update UI
+                    document.getElementById('share-interval').value = currentConfig.share_interval_seconds;
+                    document.getElementById('delay-between').value = currentConfig.share_delay_between_groups;
+                    document.getElementById('auto-share-enabled').checked = currentConfig.auto_share_enabled;
+                    document.getElementById('rotate-messages').checked = currentConfig.rotate_messages;
+                    document.getElementById('use-premium-emojis').checked = currentConfig.use_premium_emojis;
+                    
+                    updateIntervalDisplay();
+                    renderMessages();
+                }
+            } catch (error) {
+                showAlert('Error loading configuration: ' + error.message, 'error');
+            }
+        }
+
+        async function loadStats() {
+            try {
+                const response = await fetch(`${API_BASE}/api/share-stats`);
+                const data = await response.json();
+                
+                if (data.success) {
+                    renderStats(data.stats);
+                }
+            } catch (error) {
+                console.error('Error loading stats:', error);
+            }
+        }
+
+        async function loadTimePresets() {
+            try {
+                const response = await fetch(`${API_BASE}/api/share-config/time-presets`);
+                const data = await response.json();
+                
+                if (data.success) {
+                    renderTimePresets(data.presets);
+                }
+            } catch (error) {
+                console.error('Error loading presets:', error);
+            }
+        }
+
+        function renderMessages() {
+            const container = document.getElementById('message-list');
+            
+            if (messages.length === 0) {
+                container.innerHTML = '<p style="color: #999; text-align: center;">No messages added yet</p>';
+                return;
+            }
+            
+            container.innerHTML = messages.map((msg, index) => `
+                <div class="message-item">
+                    <div class="message-text">${escapeHtml(msg)}</div>
+                    <div class="message-actions">
+                        <button class="btn btn-sm btn-primary" onclick="editMessage(${index})">✏️ Edit</button>
+                        <button class="btn btn-sm btn-danger" onclick="removeMessage(${index})">🗑️ Remove</button>
+                        ${index === currentConfig.current_message_index ? '<span class="btn btn-sm btn-success">✓ Current</span>' : ''}
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        function renderTimePresets(presets) {
+            const container = document.getElementById('time-presets');
+            container.innerHTML = Object.entries(presets).map(([label, seconds]) => `
+                <div class="time-preset" onclick="setInterval('${label}', ${seconds})" 
+                     data-seconds="${seconds}">
+                    ${label.replace(/(\d+)/, '$1 ')}
+                </div>
+            `).join('');
+            
+            highlightActivePreset();
+        }
+
+        function renderStats(stats) {
+            const container = document.getElementById('stats-grid');
+            container.innerHTML = `
+                <div class="stat-item">
+                    <div class="stat-value">${stats.today_shares || 0}</div>
+                    <div class="stat-label">Shares Today</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-value">${stats.total_shares || 0}</div>
+                    <div class="stat-label">Total Shares</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-value">${stats.active_share_workers || 0}</div>
+                    <div class="stat-label">Active Workers</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-value">${stats.total_share_groups || 0}</div>
+                    <div class="stat-label">Share Groups</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-value">${formatTime(stats.share_interval || 0)}</div>
+                    <div class="stat-label">Interval</div>
+                </div>
+            `;
+        }
+
+        function setInterval(label, seconds) {
+            document.getElementById('share-interval').value = seconds;
+            updateIntervalDisplay();
+            updateConfig();
+            highlightActivePreset();
+        }
+
+        function highlightActivePreset() {
+            const currentSeconds = parseInt(document.getElementById('share-interval').value);
+            document.querySelectorAll('.time-preset').forEach(el => {
+                el.classList.toggle('active', parseInt(el.dataset.seconds) === currentSeconds);
+            });
+        }
+
+        function updateIntervalDisplay() {
+            const seconds = parseInt(document.getElementById('share-interval').value);
+            document.getElementById('interval-display').textContent = formatTime(seconds);
+            highlightActivePreset();
+        }
+
+        function formatTime(seconds) {
+            if (seconds < 60) return `${seconds} seconds`;
+            if (seconds < 3600) return `${Math.floor(seconds / 60)} minutes`;
+            if (seconds < 86400) return `${Math.floor(seconds / 3600)} hours`;
+            return `${Math.floor(seconds / 86400)} days`;
+        }
+
+        function addMessage() {
+            const textarea = document.getElementById('new-message');
+            const message = textarea.value.trim();
+            
+            if (!message) {
+                showAlert('Please enter a message', 'error');
+                return;
+            }
+            
+            messages.push(message);
+            textarea.value = '';
+            renderMessages();
+            saveMessages();
+        }
+
+        function removeMessage(index) {
+            if (confirm('Are you sure you want to remove this message?')) {
+                messages.splice(index, 1);
+                renderMessages();
+                saveMessages();
+            }
+        }
+
+        function editMessage(index) {
+            const newMessage = prompt('Edit message:', messages[index]);
+            if (newMessage !== null && newMessage.trim()) {
+                messages[index] = newMessage.trim();
+                renderMessages();
+                saveMessages();
+            }
+        }
+
+        async function saveMessages() {
+            try {
+                const response = await fetch(`${API_BASE}/api/share-config`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ messages: messages })
+                });
+                
+                const data = await response.json();
+                if (data.success) {
+                    showAlert('Messages saved successfully!', 'success');
+                    loadConfig();
+                } else {
+                    showAlert('Error saving messages: ' + data.error, 'error');
+                }
+            } catch (error) {
+                showAlert('Error saving messages: ' + error.message, 'error');
+            }
+        }
+
+        async function saveTiming() {
+            const interval = parseInt(document.getElementById('share-interval').value);
+            const delay = parseInt(document.getElementById('delay-between').value);
+            
+            try {
+                const response = await fetch(`${API_BASE}/api/share-config`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        share_interval_seconds: interval,
+                        share_delay_between_groups: delay
+                    })
+                });
+                
+                const data = await response.json();
+                if (data.success) {
+                    showAlert('Timing settings saved!', 'success');
+                } else {
+                    showAlert('Error saving timing: ' + data.error, 'error');
+                }
+            } catch (error) {
+                showAlert('Error saving timing: ' + error.message, 'error');
+            }
+        }
+
+        async function updateConfig() {
+            const config = {
+                auto_share_enabled: document.getElementById('auto-share-enabled').checked,
+                rotate_messages: document.getElementById('rotate-messages').checked,
+                use_premium_emojis: document.getElementById('use-premium-emojis').checked,
+                share_interval_seconds: parseInt(document.getElementById('share-interval').value),
+                share_delay_between_groups: parseInt(document.getElementById('delay-between').value)
+            };
+            
+            try {
+                const response = await fetch(`${API_BASE}/api/share-config`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(config)
+                });
+                
+                const data = await response.json();
+                if (data.success) {
+                    showAlert('Configuration updated!', 'success');
+                }
+            } catch (error) {
+                showAlert('Error updating config: ' + error.message, 'error');
+            }
+        }
+
+        async function startAllShares() {
+            try {
+                const response = await fetch(`${API_BASE}/api/auto-share/start-all`, {
+                    method: 'POST'
+                });
+                const data = await response.json();
+                showAlert(data.message || 'Started all share workers', 'success');
+            } catch (error) {
+                showAlert('Error starting shares: ' + error.message, 'error');
+            }
+        }
+
+        async function stopAllShares() {
+            try {
+                const response = await fetch(`${API_BASE}/api/auto-share/stop-all`, {
+                    method: 'POST'
+                });
+                const data = await response.json();
+                showAlert(data.message || 'Stopped all share workers', 'success');
+            } catch (error) {
+                showAlert('Error stopping shares: ' + error.message, 'error');
+            }
+        }
+
+        async function sendTestMessage() {
+            const message = prompt('Enter test message (or use current messages):');
+            if (message) {
+                showAlert('Test message feature coming soon!', 'info');
+            }
+        }
+
+        function refreshStats() {
+            loadStats();
+            showAlert('Stats refreshed!', 'success');
+        }
+
+        function showAlert(message, type = 'info') {
+            const container = document.getElementById('alert-container');
+            const alert = document.createElement('div');
+            alert.className = `alert alert-${type}`;
+            alert.textContent = message;
+            container.appendChild(alert);
+            
+            setTimeout(() => {
+                alert.remove();
+            }, 3000);
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        // Auto-refresh stats every 30 seconds
+        setInterval(loadStats, 30000);
+    </script>
+</body>
+  </html>

