@@ -1,62 +1,43 @@
 """
-Smart Scammer Reporter + Auto-Add System - v3.1
-Features:
-  - Persistent GitHub DB (SHA-safe, no silent empty-DB wipe)
-  - Logout / bulk-remove from DB
-  - 12h auto-cleanup (never stops worker)
-  - Aggressive mass-report (parallel, retries, rotating reasons)
-  - Protected auto-add (jitter, per-account caps, warm-up, cool-down)
+Smart Scammer Reporter + Auto-Add System
+Single-file server for Render free tier (512MB)
+All data persisted to GitHub via db.json
 """
 import os
 import asyncio
 import base64
 import json
-import random
 import time
 import threading
 import traceback
-from datetime import datetime, date, timedelta
-from collections import defaultdict
+from datetime import datetime, date
+from functools import wraps
 
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
 import requests
-
-from telethon import TelegramClient
-from telethon.sessions import StringSession
-from telethon.errors import (
-    SessionPasswordNeededError, FloodWaitError, UserPrivacyRestrictedError,
-    UserNotMutualContactError, PeerFloodError, ChatAdminRequiredError,
-    UserAlreadyParticipantError, UserChannelsTooMuchError
-)
 
 # ============================================================
 # CONFIG
 # ============================================================
 GITHUB_TOKEN = os.environ.get('GITHUB_TOKEN', '')
 GITHUB_REPO = os.environ.get('GITHUB_REPO', '')
-GITHUB_BRANCH = os.environ.get('GITHUB_BRANCH', 'main')
-GITHUB_DB_FILE = os.environ.get('GITHUB_DB_FILE', 'db.json')
+GITHUB_BRANCH = os.environ.get('GITHUB_BRANCH', '')
+GITHUB_DB_FILE = os.environ.get('GITHUB_DB_FILE', '')
 
 TELEGRAM_API_ID = int(os.environ.get('TELEGRAM_API_ID', 0))
 TELEGRAM_API_HASH = os.environ.get('TELEGRAM_API_HASH', '')
-TARGET_GROUP = os.environ.get('TARGET_GROUP', 'https://t.me/oldetb')
-
-# Safety tuning for auto-add (protected mode)
-AUTO_ADD_MAX_PER_ACCOUNT_PER_DAY = int(os.environ.get('AUTO_ADD_MAX_PER_DAY', 20))
-AUTO_ADD_WARMUP_MINUTES = int(os.environ.get('AUTO_ADD_WARMUP_MIN', 30))   # new account cools down
-AUTO_ADD_JITTER_PCT = float(os.environ.get('AUTO_ADD_JITTER_PCT', 0.4))    # ±40% delay jitter
-AUTO_ADD_MAX_ATTEMPTS_PER_USER = 2                                        # never spam same user
-AUTO_ADD_RECENTLY_ADDED_SKIP_HRS = 6                                      # skip users added in last 6h
-PENDING_LOGIN_TTL_SEC = 600                                               # 10 min OTP session lifetime
+TARGET_GROUP = os.environ.get('TARGET_GROUP', '')
 
 app = Flask(__name__, static_folder='static', static_url_path='')
 CORS(app)
 
 # ============================================================
-# GITHUB STORAGE
+# GITHUB STORAGE (db.json persistence)
 # ============================================================
 class GitHubDB:
+    """Persistent storage on GitHub - survives Render restarts."""
+    
     def __init__(self):
         self.base_url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{GITHUB_DB_FILE}"
         self.headers = {
@@ -66,33 +47,29 @@ class GitHubDB:
         }
         self._cache = None
         self._cache_time = 0
-        self._cache_ttl = 3
+        self._cache_ttl = 15  # seconds
         self._lock = threading.RLock()
         self._last_sha = None
         self._available = bool(GITHUB_TOKEN and GITHUB_REPO)
-        self._local_path = '/tmp/db.json'
+        
         if not self._available:
             print("⚠️  GitHub credentials missing - using local-only storage")
-
+            self._local_path = '/tmp/db.json'
+    
     def _local_read(self):
         try:
-            with open(self._local_path, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-            default = self._default_db()
-            for k, v in default.items():
-                if k not in data:
-                    data[k] = v
-            return data
-        except Exception:
+            with open(self._local_path, 'r') as f:
+                return json.load(f)
+        except:
             return self._default_db()
-
+    
     def _local_write(self, data):
         try:
-            with open(self._local_path, 'w', encoding='utf-8') as f:
+            with open(self._local_path, 'w') as f:
                 json.dump(data, f, indent=2)
         except Exception as e:
             print(f"Local write error: {e}")
-
+    
     def _default_db(self):
         return {
             'accounts': [],
@@ -105,47 +82,53 @@ class GitHubDB:
             'reports': [],
             'history': [],
             'stats': {
-                'reports_today': 0, 'reports_total': 0,
-                'added_today': 0, 'added_total': 0,
+                'reports_today': 0,
+                'reports_total': 0,
+                'added_today': 0,
+                'added_total': 0,
                 'last_date': date.today().isoformat()
-            },
-            'added_user_ids': [],
-            'recently_added': [],   # {uid, ts} for skip window
-            'last_cleanup': None
+            }
         }
-
+    
     def _fetch_sha(self):
         try:
-            r = requests.get(f"{self.base_url}?ref={GITHUB_BRANCH}",
-                             headers=self.headers, timeout=10)
+            r = requests.get(
+                f"{self.base_url}?ref={GITHUB_BRANCH}",
+                headers=self.headers,
+                timeout=10
+            )
             if r.status_code == 200:
-                sha = r.json().get('sha')
-                if sha:
-                    self._last_sha = sha
-                return sha
+                return r.json().get('sha')
         except Exception as e:
             print(f"SHA fetch error: {e}")
         return None
-
-    def read(self, force=False, raise_on_error=False):
+    
+    def read(self, force=False):
+        """Read db.json from GitHub"""
         if not self._available:
             return self._local_read()
+        
         with self._lock:
             if not force and self._cache and (time.time() - self._cache_time < self._cache_ttl):
                 return self._cache
+            
             try:
-                r = requests.get(f"{self.base_url}?ref={GITHUB_BRANCH}",
-                                 headers=self.headers, timeout=10)
+                r = requests.get(
+                    f"{self.base_url}?ref={GITHUB_BRANCH}",
+                    headers=self.headers,
+                    timeout=10
+                )
                 if r.status_code == 404:
+                    # File doesn't exist - create it
                     data = self._default_db()
-                    if not self._write(data, "Initialize db.json"):
-                        raise RuntimeError("Failed to initialize db.json on GitHub")
+                    self._write(data)
                     return data
                 if r.status_code == 200:
                     resp = r.json()
                     self._last_sha = resp.get('sha')
                     content = base64.b64decode(resp['content']).decode('utf-8')
                     data = json.loads(content)
+                    # Merge with defaults to handle schema changes
                     default = self._default_db()
                     for k, v in default.items():
                         if k not in data:
@@ -153,72 +136,99 @@ class GitHubDB:
                     self._cache = data
                     self._cache_time = time.time()
                     return data
-                err = f"GitHub read error: {r.status_code} - {r.text[:150]}"
-                print(err)
-                if raise_on_error:
-                    raise RuntimeError(err)
-                return self._cache or self._default_db()
+                else:
+                    print(f"GitHub read error: {r.status_code}")
+                    return self._cache or self._default_db()
             except Exception as e:
                 print(f"GitHub read exception: {e}")
-                if raise_on_error:
-                    raise
                 return self._cache or self._default_db()
-
+    
     def _write(self, data, message="Update db"):
+        """Write db.json to GitHub"""
         with self._lock:
             if not self._available:
                 self._local_write(data)
                 self._cache = data
                 self._cache_time = time.time()
                 return True
-            for attempt in range(5):
-                try:
-                    content = json.dumps(data, indent=2)
-                    encoded = base64.b64encode(content.encode('utf-8')).decode('utf-8')
-                    # Always fetch latest SHA first so parallel workers never overwrite/409
-                    sha = self._fetch_sha() or self._last_sha
-                    payload = {"message": message, "content": encoded, "branch": GITHUB_BRANCH}
-                    if sha:
-                        payload["sha"] = sha
-                    r = requests.put(self.base_url, headers=self.headers,
-                                     json=payload, timeout=15)
-                    if r.status_code in (200, 201):
-                        self._last_sha = r.json().get('content', {}).get('sha')
-                        self._cache = data
-                        self._cache_time = time.time()
-                        return True
-                    elif r.status_code in (409, 422):
-                        print(f"⚠️ GitHub conflict ({r.status_code}) attempt {attempt+1}, refreshing SHA...")
+            
+            try:
+                content = json.dumps(data, indent=2)
+                encoded = base64.b64encode(content.encode()).decode()
+                
+                sha = self._last_sha or self._fetch_sha()
+                
+                payload = {
+                    "message": message,
+                    "content": encoded,
+                    "branch": GITHUB_BRANCH
+                }
+                if sha:
+                    payload["sha"] = sha
+                
+                r = requests.put(
+                    self.base_url,
+                    headers=self.headers,
+                    json=payload,
+                    timeout=15
+                )
+                
+                if r.status_code in (200, 201):
+                    self._last_sha = r.json().get('content', {}).get('sha')
+                    self._cache = data
+                    self._cache_time = time.time()
+                    return True
+                else:
+                    print(f"GitHub write error: {r.status_code} - {r.text[:200]}")
+                    # Retry once with fresh sha
+                    if r.status_code == 409:
                         self._last_sha = self._fetch_sha()
-                        time.sleep(0.5 * (attempt + 1))
-                    else:
-                        print(f"GitHub write error: {r.status_code} - {r.text[:200]}")
-                        time.sleep(0.5 * (attempt + 1))
-                except Exception as e:
-                    print(f"GitHub write exception: {e}")
-                    time.sleep(0.5 * (attempt + 1))
-            return False
-
+                        if self._last_sha:
+                            payload["sha"] = self._last_sha
+                            r2 = requests.put(self.base_url, headers=self.headers, json=payload, timeout=15)
+                            if r2.status_code in (200, 201):
+                                self._last_sha = r2.json().get('content', {}).get('sha')
+                                self._cache = data
+                                self._cache_time = time.time()
+                                return True
+                    return False
+            except Exception as e:
+                print(f"GitHub write exception: {e}")
+                return False
+    
     def update(self, updater_func, message="Update db"):
+        """Atomically update db with a function"""
         with self._lock:
-            # Never silently fall back to an empty default DB when updating
-            data = self.read(force=True, raise_on_error=True)
+            data = self.read(force=True)
             updater_func(data)
             return self._write(data, message)
-
+    
     def invalidate(self):
         with self._lock:
             self._cache = None
             self._cache_time = 0
 
+
 db = GitHubDB()
 
 # ============================================================
-# ASYNC HELPER (fresh loop per call, per thread)
+# ASYNC HELPER
 # ============================================================
+_loop = None
+_loop_lock = threading.Lock()
+
+def get_loop():
+    global _loop
+    with _loop_lock:
+        if _loop is None or _loop.is_closed():
+            _loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(_loop)
+        return _loop
+
 def run_async(coro):
-    try:
-        asyncio.get_running_loop()
+    loop = get_loop()
+    if loop.is_running():
+        # Run in a new thread with its own loop
         result_box = {}
         def runner():
             new_loop = asyncio.new_event_loop()
@@ -229,36 +239,32 @@ def run_async(coro):
                 result_box['error'] = e
             finally:
                 new_loop.close()
-                asyncio.set_event_loop(None)
         t = threading.Thread(target=runner)
         t.start()
-        t.join(timeout=90)
+        t.join(timeout=120)
         if 'error' in result_box:
             raise result_box['error']
-        if 'result' not in result_box:
-            raise TimeoutError("Async operation timed out after 90s")
-        return result_box['result']
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            return loop.run_until_complete(coro)
-        finally:
-            loop.close()
-            asyncio.set_event_loop(None)
+        return result_box.get('result')
+    return loop.run_until_complete(coro)
 
 # ============================================================
 # TELEGRAM OPERATIONS
 # ============================================================
 def _make_client(session_string):
+    from telethon import TelegramClient
     return TelegramClient(
-        StringSession(session_string),
-        TELEGRAM_API_ID, TELEGRAM_API_HASH,
-        connection_retries=2, retry_delay=1,
-        timeout=30, request_retries=2
+        session_string,
+        TELEGRAM_API_ID,
+        TELEGRAM_API_HASH,
+        connection_retries=2,
+        retry_delay=1,
+        timeout=30,
+        request_retries=2
     )
 
+
 async def tg_join_group(session_string, group_link):
+    """Join a group using stored session"""
     client = None
     try:
         client = _make_client(session_string)
@@ -267,21 +273,20 @@ async def tg_join_group(session_string, group_link):
             return {'success': False, 'error': 'Not authorized'}
         entity = await client.get_entity(group_link)
         from telethon.tl.functions.channels import JoinChannelRequest
-        try:
-            await client(JoinChannelRequest(entity))
-        except UserAlreadyParticipantError:
-            return {'success': True, 'already': True}
+        await client(JoinChannelRequest(entity))
         return {'success': True}
-    except FloodWaitError as e:
-        return {'success': False, 'error': f'FloodWait {e.seconds}s', 'flood': e.seconds}
     except Exception as e:
         return {'success': False, 'error': str(e)}
     finally:
         if client:
-            try: await client.disconnect()
-            except: pass
+            try:
+                await client.disconnect()
+            except:
+                pass
+
 
 async def tg_report_user(session_string, username, reason='scam', message=''):
+    """Report a user from one account"""
     client = None
     try:
         from telethon.tl.functions.account import ReportPeerRequest
@@ -291,8 +296,10 @@ async def tg_report_user(session_string, username, reason='scam', message=''):
             InputReportReasonChildAbuse, InputReportReasonIllegalDrugs,
             InputReportReasonPersonalDetails, InputReportReasonCopyright
         )
+        
         reason_map = {
-            'spam': InputReportReasonSpam(), 'fake': InputReportReasonFake(),
+            'spam': InputReportReasonSpam(),
+            'fake': InputReportReasonFake(),
             'violence': InputReportReasonViolence(),
             'pornography': InputReportReasonPornography(),
             'child_abuse': InputReportReasonChildAbuse(),
@@ -301,32 +308,42 @@ async def tg_report_user(session_string, username, reason='scam', message=''):
             'copyright': InputReportReasonCopyright(),
             'scam': InputReportReasonSpam(),
         }
+        
         client = _make_client(session_string)
         await client.connect()
+        
         if not await client.is_user_authorized():
             return {'success': False, 'error': 'Not authorized'}
+        
         target = username.lstrip('@').strip()
         try:
             entity = await client.get_entity(target)
         except Exception as e:
             return {'success': False, 'error': f'Cannot find: {str(e)[:80]}'}
+        
+        reason_obj = reason_map.get(reason, InputReportReasonSpam())
         await client(ReportPeerRequest(
             peer=entity,
-            reason=reason_map.get(reason, InputReportReasonSpam()),
+            reason=reason_obj,
             message=message or "Scam / fake account report"
         ))
         return {'success': True}
-    except FloodWaitError as e:
-        return {'success': False, 'error': f'FloodWait {e.seconds}s'}
     except Exception as e:
         return {'success': False, 'error': str(e)[:150]}
     finally:
         if client:
-            try: await client.disconnect()
-            except: pass
+            try:
+                await client.disconnect()
+            except:
+                pass
+
 
 async def tg_send_code(phone):
-    client = _make_client("")
+    """Send login code"""
+    from telethon import TelegramClient
+    from telethon.sessions import StringSession
+    
+    client = TelegramClient(StringSession(), TELEGRAM_API_ID, TELEGRAM_API_HASH)
     await client.connect()
     try:
         sent = await client.send_code_request(phone)
@@ -339,24 +356,30 @@ async def tg_send_code(phone):
     except Exception as e:
         return {'success': False, 'error': str(e)}
     finally:
-        try: await client.disconnect()
-        except: pass
+        await client.disconnect()
+
 
 async def tg_verify_code(session_string, phone, code, phone_code_hash, password=None):
-    client = _make_client(session_string)
+    """Verify login code and return session string"""
+    from telethon import TelegramClient
+    from telethon.errors import SessionPasswordNeededError
+    
+    client = TelegramClient(StringSession(session_string), TELEGRAM_API_ID, TELEGRAM_API_HASH)
     await client.connect()
     try:
         try:
-            await client.sign_in(phone=phone, code=code,
-                                 phone_code_hash=phone_code_hash)
+            await client.sign_in(phone=phone, code=code, phone_code_hash=phone_code_hash)
         except SessionPasswordNeededError:
             if not password:
                 return {'success': False, 'need_password': True, 'error': '2FA required'}
             await client.sign_in(password=password)
+        
         me = await client.get_me()
+        new_session = client.session.save()
+        
         return {
             'success': True,
-            'session_string': client.session.save(),
+            'session_string': new_session,
             'user': {
                 'id': me.id,
                 'first_name': me.first_name or '',
@@ -368,175 +391,115 @@ async def tg_verify_code(session_string, phone, code, phone_code_hash, password=
     except Exception as e:
         return {'success': False, 'error': str(e)}
     finally:
-        try: await client.disconnect()
-        except: pass
+        await client.disconnect()
+
 
 async def tg_get_chats(session_string):
+    """Get chat list"""
     client = None
     try:
         client = _make_client(session_string)
         await client.connect()
         if not await client.is_user_authorized():
             return {'success': False, 'error': 'auth_key_unregistered'}
+        
         dialogs = await client.get_dialogs(limit=100)
         chats = []
         for d in dialogs:
             t = 'user'
             if d.is_group: t = 'group'
             elif d.is_channel: t = 'channel'
+            
             media = None
             if d.message and d.message.media:
                 media = type(d.message.media).__name__.lower()
+            
             chats.append({
-                'id': d.id, 'title': d.name or 'Unknown', 'type': t,
+                'id': d.id,
+                'title': d.name or 'Unknown',
+                'type': t,
                 'lastMessage': d.message.text if d.message and d.message.text else '',
                 'lastMessageDate': int(d.message.date.timestamp()) if d.message else None,
-                'lastMessageMedia': media, 'unread': d.unread_count or 0
+                'lastMessageMedia': media,
+                'unread': d.unread_count or 0
             })
         return {'success': True, 'chats': chats}
     except Exception as e:
         return {'success': False, 'error': str(e)[:150]}
     finally:
         if client:
-            try: await client.disconnect()
-            except: pass
+            try:
+                await client.disconnect()
+            except:
+                pass
 
-async def tg_get_group_members(session_string, group_link, limit=100):
+
+async def tg_get_group_members(session_string, group_link, limit=50):
+    """Get members from target group for auto-add"""
     client = None
     try:
         client = _make_client(session_string)
         await client.connect()
         if not await client.is_user_authorized():
             return {'success': False, 'error': 'Not authorized'}
+        
         entity = await client.get_entity(group_link)
         members = await client.get_participants(entity, limit=limit)
+        
         result = [{
-            'id': m.id, 'username': m.username,
-            'first_name': m.first_name, 'last_name': m.last_name,
-            'bot': getattr(m, 'bot', False),
-            'deleted': getattr(m, 'deleted', False),
-            'mutual': getattr(m, 'mutual_contact', False),
-        } for m in members]
+            'id': m.id,
+            'username': m.username,
+            'first_name': m.first_name,
+            'last_name': m.last_name
+        } for m in members if not m.bot and not m.deleted]
+        
         return {'success': True, 'members': result}
-    except FloodWaitError as e:
-        return {'success': False, 'error': f'FloodWait {e.seconds}s', 'flood': e.seconds}
     except Exception as e:
         return {'success': False, 'error': str(e)[:150]}
     finally:
         if client:
-            try: await client.disconnect()
-            except: pass
+            try:
+                await client.disconnect()
+            except:
+                pass
 
-async def _add_user(session_string, group_link, user_id_or_username):
-    client = None
-    try:
-        from telethon.tl.functions.channels import InviteToChannelRequest
-        client = _make_client(session_string)
-        await client.connect()
-        if not await client.is_user_authorized():
-            return {'success': False, 'reason': 'not_authorized'}
-        group = await client.get_entity(group_link)
-        user = await client.get_entity(user_id_or_username)
-        await client(InviteToChannelRequest(channel=group, users=[user]))
-        return {'success': True}
-    except UserPrivacyRestrictedError:
-        return {'success': False, 'reason': 'privacy'}
-    except UserNotMutualContactError:
-        return {'success': False, 'reason': 'not_mutual'}
-    except UserChannelsTooMuchError:
-        return {'success': False, 'reason': 'channels_limit'}
-    except PeerFloodError:
-        return {'success': False, 'reason': 'peer_flood', 'cool_down': True}
-    except FloodWaitError as e:
-        return {'success': False, 'reason': f'flood_{e.seconds}s', 'flood': e.seconds}
-    except ChatAdminRequiredError:
-        return {'success': False, 'reason': 'admin_required'}
-    except Exception as e:
-        return {'success': False, 'reason': str(e)[:80]}
-    finally:
-        if client:
-            try: await client.disconnect()
-            except: pass
 
 # ============================================================
-# AGGRESSIVE MASS REPORT ENGINE
+# MASS REPORT ENGINE
 # ============================================================
-REPORT_REASONS_POOL = [
-    'spam', 'scam', 'fake', 'spam', 'scam', 'fake',
-    'violence', 'personal_details', 'copyright'
-]
-
-REPORT_MESSAGES_POOL = [
-    "This account is a confirmed scam — please review and ban.",
-    "Reports from many users. Violates Telegram ToS. Please remove.",
-    "Fake / impersonation account used for fraud. Please ban.",
-    "Scam account targeting innocent users. Needs immediate ban.",
-    "This account has scammed multiple users. Please take action.",
-    "Reported by community. Violates Telegram Terms of Service.",
-    "Fraudulent account — please investigate activity and ban.",
-]
-
-def _pick_reason(primary):
-    if random.random() < 0.55:
-        return primary
-    return random.choice(REPORT_REASONS_POOL)
-
-def _pick_message(primary_message):
-    if primary_message and random.random() < 0.5:
-        return primary_message
-    return random.choice(REPORT_MESSAGES_POOL)
-
 def mass_report(username, reason='scam', message=''):
-    data = db.read(force=True)
-    accounts = [a for a in data.get('accounts', [])
-                if a.get('active', True) and a.get('session_string')]
+    """
+    Report a scammer using ALL available accounts.
+    Returns aggregated results.
+    """
+    data = db.read()
+    accounts = [a for a in data.get('accounts', []) if a.get('active', True) and a.get('session_string')]
+    
     if not accounts:
         return {'success': False, 'error': 'No active accounts available'}
-
+    
     username = username.lstrip('@').strip()
     if not username:
         return {'success': False, 'error': 'Invalid username'}
-
-    print(f"🚨 AGGRESSIVE MASS REPORT: @{username} from {len(accounts)} accounts")
+    
+    print(f"🚨 MASS REPORT: @{username} from {len(accounts)} accounts")
+    
     report_id = f"rpt_{int(time.time() * 1000)}"
     results = []
     successful = 0
     failed = 0
-
-    def _run_one(acc, attempt=1):
+    
+    # Report from each account (sequentially to avoid rate limits, but fast)
+    for acc in accounts:
         try:
-            r_reason = _pick_reason(reason) if attempt > 1 else reason
-            r_message = _pick_message(message) if attempt > 1 else message
-            r = run_async(tg_report_user(acc['session_string'],
-                                         username, r_reason, r_message))
-            return acc, r
-        except Exception as e:
-            return acc, {'success': False, 'error': str(e)[:120]}
-
-    def _parallel_batch(batch, attempt=1):
-        threads = []
-        box = []
-        lock = threading.Lock()
-        def _wrap(acc):
-            _, r = _run_one(acc, attempt)
-            with lock:
-                box.append((acc, r))
-        for acc in batch:
-            t = threading.Thread(target=_wrap, args=(acc,))
-            t.start()
-            threads.append(t)
-            time.sleep(random.uniform(0.3, 0.9))
-        for t in threads:
-            t.join(timeout=45)
-        return box
-
-    retry_queue = []
-    for i in range(0, len(accounts), 6):
-        batch = accounts[i:i+6]
-        for acc, r in _parallel_batch(batch, attempt=1):
+            r = run_async(tg_report_user(
+                acc['session_string'], username, reason, message
+            ))
             if r.get('success'):
                 successful += 1
                 results.append({'account': acc.get('name', acc['id']), 'success': True})
+                # Update account report stats
+                _bump_account_stat(acc['id'], 'report')
             else:
                 failed += 1
                 results.append({
@@ -544,320 +507,185 @@ def mass_report(username, reason='scam', message=''):
                     'success': False,
                     'error': r.get('error', 'unknown')
                 })
-                if 'not authorized' not in (r.get('error') or '').lower():
-                    retry_queue.append(acc)
-        time.sleep(random.uniform(0.8, 1.5))
-
-    if retry_queue:
-        print(f"🔁 Retrying {len(retry_queue)} failed accounts with rotated reason...")
-        for i in range(0, len(retry_queue), 5):
-            batch = retry_queue[i:i+5]
-            for acc, r in _parallel_batch(batch, attempt=2):
-                if r.get('success'):
-                    successful += 1
-                    for row in results:
-                        if row.get('account') == acc.get('name', acc['id']) and not row.get('success'):
-                            row['success'] = True
-                            row.pop('error', None)
-                            failed -= 1
-                            break
-            time.sleep(random.uniform(1.0, 2.0))
-
+        except Exception as e:
+            failed += 1
+            results.append({
+                'account': acc.get('name', acc['id']),
+                'success': False,
+                'error': str(e)[:100]
+            })
+        # Small delay between accounts to reduce flood-wait
+        time.sleep(0.5)
+    
     record = {
-        'id': report_id, 'username': username, 'reason': reason,
+        'id': report_id,
+        'username': username,
+        'reason': reason,
         'message': message,
         'started_at': datetime.now().isoformat(),
         'completed_at': datetime.now().isoformat(),
-        'total_accounts': len(accounts), 'successful': successful,
-        'failed': failed, 'results': results[:100]
+        'total_accounts': len(accounts),
+        'successful': successful,
+        'failed': failed,
+        'results': results[:100]
     }
-
+    
     def _upd(d):
         d.setdefault('history', []).append(record)
-        d['history'] = d['history'][-300:]
+        d['history'] = d['history'][-500:]
         d.setdefault('stats', {})
         d['stats']['reports_today'] = d['stats'].get('reports_today', 0) + 1
         d['stats']['reports_total'] = d['stats'].get('reports_total', 0) + 1
     db.update(_upd, f"Report @{username}")
-
+    
+    print(f"✅ Report done: {successful}/{len(accounts)} success")
+    
     return {
-        'success': True, 'report_id': report_id, 'username': username,
-        'total_accounts': len(accounts), 'successful': successful,
+        'success': True,
+        'report_id': report_id,
+        'username': username,
+        'total_accounts': len(accounts),
+        'successful': successful,
         'failed': failed,
         'message': f'Reported @{username} from {successful}/{len(accounts)} accounts'
     }
 
+
+def _bump_account_stat(account_id, stat_type):
+    """Increment a per-account stat"""
+    def _upd(d):
+        for acc in d.get('accounts', []):
+            if acc['id'] == account_id:
+                s = acc.setdefault('stats', {})
+                s[f'{stat_type}_today'] = s.get(f'{stat_type}_today', 0) + 1
+                s[f'{stat_type}_total'] = s.get(f'{stat_type}_total', 0) + 1
+                break
+    db.update(_upd, f"Bump {stat_type}")
+
+
 # ============================================================
-# AUTO-JOIN
+# AUTO-JOIN + AUTO-ADD WORKERS
 # ============================================================
 _auto_join_pending = set()
-_auto_join_lock = threading.Lock()
 
 def schedule_auto_join(account_id):
-    with _auto_join_lock:
-        if account_id in _auto_join_pending:
-            return
-        _auto_join_pending.add(account_id)
-
+    """Auto-join target group after account added"""
+    if account_id in _auto_join_pending:
+        return
+    _auto_join_pending.add(account_id)
+    
     def worker():
         try:
-            time.sleep(5)
+            # Small delay to let db settle
+            time.sleep(2)
             data = db.read(force=True)
-            acc = next((a for a in data.get('accounts', [])
-                        if a['id'] == account_id), None)
+            acc = next((a for a in data.get('accounts', []) if a['id'] == account_id), None)
             if not acc or not acc.get('session_string'):
-                print(f"⚠️ Auto-join skipped: account {account_id} not in DB")
                 return
-            target = data.get('config', {}).get('target_group', TARGET_GROUP)
-            print(f"📥 Auto-joining {target} for {account_id}")
-            result = run_async(tg_join_group(acc['session_string'], target))
-            ok = bool(result.get('success'))
-            print(f"📥 Auto-join {'OK' if ok else 'FAILED: ' + str(result.get('error'))}")
-
+            print(f"📥 Auto-joining {TARGET_GROUP} for account {account_id}")
+            result = run_async(tg_join_group(acc['session_string'], TARGET_GROUP))
+            
             def _upd(d):
                 for a in d.get('accounts', []):
                     if a['id'] == account_id:
-                        a['joined_target'] = ok
+                        a['joined_target'] = bool(result.get('success'))
                         break
             db.update(_upd, f"Auto-join result {account_id}")
+            print(f"📥 Auto-join: {'OK' if result.get('success') else 'FAILED'}")
         except Exception as e:
             print(f"Auto-join error: {e}")
-            traceback.print_exc()
         finally:
-            with _auto_join_lock:
-                _auto_join_pending.discard(account_id)
-
+            _auto_join_pending.discard(account_id)
+    
     threading.Thread(target=worker, daemon=True).start()
 
-# ============================================================
-# PROTECTED AUTO-ADD WORKER
-# ============================================================
+
+# Background auto-add loop
 _auto_add_thread = None
 _auto_add_stop = threading.Event()
 
-_account_state = defaultdict(lambda: {
-    'added_today': 0,
-    'day': date.today().isoformat(),
-    'cool_until': 0.0,
-    'consecutive_failures': 0,
-    'last_add_ts': 0.0,
-})
-
-def _state_for(acc_id):
-    s = _account_state[acc_id]
-    today = date.today().isoformat()
-    if s['day'] != today:
-        s['day'] = today
-        s['added_today'] = 0
-        s['consecutive_failures'] = 0
-    return s
-
-def _human_delay(base_seconds):
-    jitter = base_seconds * AUTO_ADD_JITTER_PCT
-    return max(15, int(random.uniform(base_seconds - jitter, base_seconds + jitter)))
-
-def _account_in_warmup(acc):
-    try:
-        added = datetime.fromisoformat(acc.get('added_at', '1970-01-01T00:00:00'))
-        return (datetime.now() - added) < timedelta(minutes=AUTO_ADD_WARMUP_MINUTES)
-    except Exception:
-        return False
-
-def _account_rate_limited(acc):
-    s = _state_for(acc['id'])
-    if s['added_today'] >= AUTO_ADD_MAX_PER_ACCOUNT_PER_DAY:
-        return True
-    if time.time() < s['cool_until']:
-        return True
-    if s['consecutive_failures'] >= 3:
-        s['cool_until'] = time.time() + 1800
-        s['consecutive_failures'] = 0
-        print(f"❄️  Account {acc['id']} cooled down 30min (too many failures)")
-        return True
-    return False
-
-def _should_skip_member(m):
-    if m.get('bot'): return True
-    if m.get('deleted'): return True
-    if not m.get('username'): return True
-    return False
-
-def _is_recently_added(uid, recently):
-    cutoff = time.time() - AUTO_ADD_RECENTLY_ADDED_SKIP_HRS * 3600
-    for row in recently:
-        if row.get('uid') == uid and row.get('ts', 0) > cutoff:
-            return True
-    return False
-
 def _auto_add_loop():
-    print("🔄 Protected auto-add worker started")
-    _ensure_all_joined()
-
+    """Background worker that adds users to target group"""
+    print("🔄 Auto-add worker started")
     while not _auto_add_stop.is_set():
         try:
-            data = db.read(force=True)
+            data = db.read()
             config = data.get('config', {})
             if not config.get('auto_add_enabled'):
                 time.sleep(10)
                 continue
-
+            
             target = config.get('target_group', TARGET_GROUP)
-            base_delay = max(30, int(config.get('delay_seconds', 30)))
-
-            candidates = []
-            for a in data.get('accounts', []):
-                if not (a.get('active', True) and a.get('session_string')):
-                    continue
-                if not a.get('joined_target'):
-                    continue
-                if _account_in_warmup(a):
-                    continue
-                if _account_rate_limited(a):
-                    continue
-                candidates.append(a)
-
-            if not candidates:
-                print("😴 No eligible accounts. Sleeping 60s...")
-                time.sleep(60)
+            delay = max(30, int(config.get('delay_seconds', 30)))
+            
+            accounts = [a for a in data.get('accounts', []) 
+                       if a.get('active', True) and a.get('session_string')]
+            
+            if not accounts:
+                time.sleep(15)
                 continue
-
-            random.shuffle(candidates)
-            inviter = candidates[0]
-
+            
+            # Get members from group to add
+            acc = accounts[0]
             try:
-                members_res = run_async(tg_get_group_members(
-                    inviter['session_string'], target, limit=100))
-            except Exception as e:
-                print(f"Get members error: {e}")
-                time.sleep(20)
-                continue
-
-            if not members_res.get('success'):
-                if members_res.get('flood'):
-                    wait = int(members_res['flood']) + 5
-                    print(f"⏳ Flood while fetching members: sleeping {wait}s")
-                    time.sleep(wait)
-                else:
-                    print(f"Get members failed: {members_res.get('error')}")
-                    time.sleep(20)
-                continue
-
-            data = db.read(force=True)
-            added_ids = set(data.get('added_user_ids', []))
-            recently = data.get('recently_added', [])
-            own_ids = {a['id'] for a in data.get('accounts', [])}
-
-            candidates_members = []
-            for m in members_res['members']:
-                if m['id'] in own_ids: continue
-                if m['id'] in added_ids: continue
-                if _should_skip_member(m): continue
-                if _is_recently_added(m['id'], recently): continue
-                candidates_members.append(m)
-
-            if not candidates_members:
-                print("😴 No fresh members to add. Sleeping 90s...")
-                time.sleep(90)
-                continue
-
-            added_this_cycle = 0
-            for m in candidates_members[:2]:
-                if _auto_add_stop.is_set(): break
-
-                target_user = m.get('username')
-                if not target_user:
-                    continue
-
-                ok = False
-                for a in candidates:
-                    if _account_rate_limited(a):
-                        continue
-                    s = _state_for(a['id'])
-                    try:
-                        r = run_async(_add_user(a['session_string'], target, target_user))
-                        if r.get('success'):
-                            ok = True
-                            s['added_today'] += 1
-                            s['consecutive_failures'] = 0
-                            s['last_add_ts'] = time.time()
+                members = run_async(tg_get_group_members(acc['session_string'], target, limit=50))
+                if members.get('success'):
+                    # Track which we've tried
+                    added_ids = set(data.get('added_user_ids', []))
+                    new_members = [m for m in members['members'] if m['id'] not in added_ids][:5]
+                    
+                    for m in new_members:
+                        if _auto_add_stop.is_set():
                             break
-                        else:
-                            reason = r.get('reason', '')
-                            if r.get('flood'):
-                                s['cool_until'] = time.time() + int(r['flood']) + 10
-                            elif r.get('cool_down'):
-                                s['cool_until'] = time.time() + 3600
-                            elif reason in ('not_authorized',):
-                                def _mark(d, aid=a['id']):
-                                    for acc in d.get('accounts', []):
-                                        if acc['id'] == aid:
-                                            acc['active'] = False
-                                            break
-                                db.update(_mark, f"Mark inactive {a['id']}")
-                            else:
-                                s['consecutive_failures'] += 1
-                    except Exception as e:
-                        print(f"add error: {e}")
-                        s['consecutive_failures'] += 1
-
-                    time.sleep(_human_delay(base_delay // 2))
-
-                if ok:
-                    added_this_cycle += 1
-
-                def _upd(d, uid=m['id'], uname=target_user, success=ok):
-                    d.setdefault('added_user_ids', []).append(uid)
-                    d['added_user_ids'] = d['added_user_ids'][-1500:]
-                    d.setdefault('recently_added', []).append({
-                        'uid': uid, 'ts': time.time(), 'username': uname,
-                        'ok': success
-                    })
-                    cutoff = time.time() - 12 * 3600
-                    d['recently_added'] = [x for x in d['recently_added']
-                                           if x.get('ts', 0) > cutoff][-800:]
-                    d.setdefault('stats', {})
-                    if success:
-                        d['stats']['added_today'] = d['stats'].get('added_today', 0) + 1
-                        d['stats']['added_total'] = d['stats'].get('added_total', 0) + 1
-                db.update(_upd, f"Auto-add {target_user}")
-                print(f"➕ {'Added' if ok else 'Skipped/failed'} @{target_user}")
-
-                time.sleep(_human_delay(base_delay))
-
-            if added_this_cycle == 0:
-                print("😴 0 added this cycle. Sleeping 60s...")
-                time.sleep(60)
-
+                        # Add from each account
+                        for a in accounts:
+                            try:
+                                run_async(_add_user(a['session_string'], target, m['username'] or m['id']))
+                            except:
+                                pass
+                            time.sleep(1)
+                        
+                        def _upd(d):
+                            d.setdefault('added_user_ids', []).append(m['id'])
+                            d['added_user_ids'] = d['added_user_ids'][-1000:]
+                            d.setdefault('stats', {})
+                            d['stats']['added_today'] = d['stats'].get('added_today', 0) + 1
+                            d['stats']['added_total'] = d['stats'].get('added_total', 0) + 1
+                        db.update(_upd, "Auto-add user")
+                        
+                        time.sleep(delay)
+            except Exception as e:
+                print(f"Auto-add cycle error: {e}")
+            
+            time.sleep(5)
         except Exception as e:
             print(f"Auto-add loop error: {e}")
-            traceback.print_exc()
             time.sleep(15)
     print("🛑 Auto-add worker stopped")
 
-def _ensure_all_joined():
+
+async def _add_user(session_string, group_link, user_id_or_username):
+    """Add a single user to a group"""
+    client = None
     try:
-        data = db.read(force=True)
-        target = data.get('config', {}).get('target_group', TARGET_GROUP)
-        for acc in data.get('accounts', []):
-            if acc.get('joined_target'):
-                continue
-            if not acc.get('session_string'):
-                continue
-            try:
-                r = run_async(tg_join_group(acc['session_string'], target))
-                ok = bool(r.get('success'))
-                def _upd(d, aid=acc['id'], j=ok):
-                    for a in d.get('accounts', []):
-                        if a['id'] == aid:
-                            a['joined_target'] = j
-                            break
-                db.update(_upd, f"Startup auto-join {acc['id']}")
-                print(f"📥 Startup join {acc['id']}: {'OK' if ok else 'FAIL'}")
-            except Exception as e:
-                print(f"Startup join error for {acc['id']}: {e}")
-            time.sleep(random.uniform(2, 4))
+        from telethon.tl.functions.channels import InviteToChannelRequest
+        client = _make_client(session_string)
+        await client.connect()
+        if not await client.is_user_authorized():
+            return {'success': False}
+        group = await client.get_entity(group_link)
+        user = await client.get_entity(user_id_or_username)
+        await client(InviteToChannelRequest(channel=group, users=[user]))
+        return {'success': True}
     except Exception as e:
-        print(f"_ensure_all_joined error: {e}")
+        return {'success': False, 'error': str(e)[:100]}
+    finally:
+        if client:
+            try:
+                await client.disconnect()
+            except:
+                pass
+
 
 def start_auto_add_worker():
     global _auto_add_thread
@@ -866,57 +694,12 @@ def start_auto_add_worker():
         _auto_add_thread = threading.Thread(target=_auto_add_loop, daemon=True)
         _auto_add_thread.start()
 
-# ============================================================
-# 12H CLEANUP WORKER (never stops add-worker)
-# ============================================================
-_cleanup_thread = None
-_cleanup_stop = threading.Event()
-CLEANUP_INTERVAL_SEC = 12 * 3600
-
-def _run_cleanup_once():
-    now = datetime.now()
-    print(f"🧹 Cleanup start @ {now.isoformat()}")
-
-    def _upd(d):
-        if len(d.get('history', [])) > 100:
-            d['history'] = d['history'][-100:]
-        if len(d.get('reports', [])) > 100:
-            d['reports'] = d['reports'][-100:]
-        if len(d.get('added_user_ids', [])) > 800:
-            d['added_user_ids'] = d['added_user_ids'][-800:]
-        cutoff = time.time() - 12 * 3600
-        d['recently_added'] = [x for x in d.get('recently_added', [])
-                               if x.get('ts', 0) > cutoff][-500:]
-        for rec in d.get('history', []):
-            if len(rec.get('results', [])) > 50:
-                rec['results'] = rec['results'][-50:]
-        d['last_cleanup'] = now.isoformat()
-    ok = db.update(_upd, "12h cleanup")
-    print(f"🧹 Cleanup {'OK' if ok else 'FAILED'}")
-
-def _cleanup_loop():
-    print("🧹 Cleanup worker started")
-    _cleanup_stop.wait(30)
-    while not _cleanup_stop.is_set():
-        try:
-            _run_cleanup_once()
-        except Exception as e:
-            print(f"Cleanup error: {e}")
-            traceback.print_exc()
-        _cleanup_stop.wait(CLEANUP_INTERVAL_SEC)
-    print("🛑 Cleanup worker stopped")
-
-def start_cleanup_worker():
-    global _cleanup_thread
-    if _cleanup_thread is None or not _cleanup_thread.is_alive():
-        _cleanup_stop.clear()
-        _cleanup_thread = threading.Thread(target=_cleanup_loop, daemon=True)
-        _cleanup_thread.start()
 
 # ============================================================
-# DAILY STATS RESET
+# STATS HELPERS
 # ============================================================
 def refresh_daily_stats():
+    """Reset today's counters if date changed"""
     def _upd(d):
         s = d.setdefault('stats', {})
         today = date.today().isoformat()
@@ -925,313 +708,242 @@ def refresh_daily_stats():
             s['added_today'] = 0
             s['last_date'] = today
             for acc in d.get('accounts', []):
-                acc.setdefault('stats', {})
-                acc['stats']['report_today'] = 0
-                acc['stats']['add_today'] = 0
-    try:
-        db.update(_upd, "Daily reset")
-    except Exception as e:
-        print(f"Daily reset skipped due to read error: {e}")
+                acc.setdefault('stats', {})['report_today'] = 0
+                acc.setdefault('stats', {})['add_today'] = 0
+    db.update(_upd, "Daily reset")
+
 
 # ============================================================
-# ROUTES
+# FLASK ROUTES
 # ============================================================
+
+# -------- Static pages --------
 @app.route('/')
 def r_index(): return send_from_directory('static', 'dashboard.html')
+
 @app.route('/dashboard')
 def r_dash(): return send_from_directory('static', 'dashboard.html')
+
 @app.route('/report')
 def r_report(): return send_from_directory('static', 'report.html')
+
 @app.route('/devices')
 def r_devices(): return send_from_directory('static', 'all.html')
+
 @app.route('/all')
 def r_all(): return send_from_directory('static', 'all.html')
+
 @app.route('/auto-add')
 def r_autoadd(): return send_from_directory('static', 'auto_add.html')
+
 @app.route('/login')
 def r_login(): return send_from_directory('static', 'login.html')
+
 @app.route('/control')
 def r_control(): return send_from_directory('static', 'control.html')
 
+
+# -------- Health --------
 @app.route('/api/health')
 def api_health():
     try:
-        data = db.read(force=True)
+        data = db.read()
         return jsonify({
-            'success': True, 'github_connected': db._available,
+            'success': True,
+            'github_connected': db._available,
             'accounts': len(data.get('accounts', [])),
-            'auto_add_worker_alive': bool(_auto_add_thread and _auto_add_thread.is_alive()),
-            'cleanup_worker_alive': bool(_cleanup_thread and _cleanup_thread.is_alive()),
-            'last_cleanup': data.get('last_cleanup'),
             'server_name': os.environ.get('RENDER_SERVICE_NAME', 'local'),
             'server_time': datetime.now().isoformat()
         })
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 
+
+# -------- Accounts --------
 @app.route('/api/accounts', methods=['GET'])
 def api_accounts():
     try:
-        data = db.read(force=True)
-        accounts = [{k: v for k, v in a.items() if k != 'session_string'}
-                    for a in data.get('accounts', [])]
+        data = db.read()
+        accounts = []
+        for a in data.get('accounts', []):
+            # Strip session_string from response
+            safe = {k: v for k, v in a.items() if k != 'session_string'}
+            accounts.append(safe)
         return jsonify({'success': True, 'accounts': accounts})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 
+
 @app.route('/api/remove-account', methods=['POST'])
 def api_remove_account():
     try:
-        account_id = (request.json or {}).get('accountId')
-        if not account_id:
-            return jsonify({'success': False, 'error': 'accountId required'}), 400
+        account_id = request.json.get('accountId')
         def _upd(d):
-            d['accounts'] = [a for a in d.get('accounts', [])
-                             if a['id'] != account_id]
-        ok = db.update(_upd, f"Remove account {account_id}")
-        if not ok:
-            return jsonify({'success': False, 'error': 'DB write failed'}), 500
-        _account_state.pop(account_id, None)
+            d['accounts'] = [a for a in d.get('accounts', []) if a['id'] != account_id]
+        db.update(_upd, f"Remove account {account_id}")
         return jsonify({'success': True, 'message': 'Account removed'})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 
-@app.route('/api/remove-accounts', methods=['POST'])
-def api_remove_accounts():
-    try:
-        ids = (request.json or {}).get('accountIds') or []
-        if not isinstance(ids, list) or not ids:
-            return jsonify({'success': False, 'error': 'accountIds[] required'}), 400
-        id_set = set(ids)
-        removed = 0
-        def _upd(d):
-            nonlocal removed
-            before = len(d.get('accounts', []))
-            d['accounts'] = [a for a in d.get('accounts', [])
-                             if a['id'] not in id_set]
-            removed = before - len(d['accounts'])
-        ok = db.update(_upd, f"Bulk remove {len(ids)} accounts")
-        if not ok:
-            return jsonify({'success': False, 'error': 'DB write failed'}), 500
-        for i in ids:
-            _account_state.pop(i, None)
-        return jsonify({'success': True, 'removed': removed,
-                        'message': f'Removed {removed} account(s)'})
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
 
-@app.route('/api/logout', methods=['POST'])
-def api_logout():
-    try:
-        account_id = (request.json or {}).get('accountId')
-        if not account_id:
-            return jsonify({'success': False, 'error': 'accountId required'}), 400
-        def _upd(d):
-            d['accounts'] = [a for a in d.get('accounts', [])
-                             if a['id'] != account_id]
-        ok = db.update(_upd, f"Logout account {account_id}")
-        if not ok:
-            return jsonify({'success': False, 'error': 'DB write failed'}), 500
-        _account_state.pop(account_id, None)
-        return jsonify({'success': True, 'message': 'Logged out'})
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-@app.route('/api/cleanup', methods=['POST'])
-def api_cleanup():
-    try:
-        _run_cleanup_once()
-        data = db.read(force=True)
-        return jsonify({
-            'success': True,
-            'last_cleanup': data.get('last_cleanup'),
-            'history': len(data.get('history', [])),
-            'added_ids': len(data.get('added_user_ids', [])),
-            'recently_added': len(data.get('recently_added', []))
-        })
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-_pending_logins = {}
-_pending_logins_lock = threading.Lock()
-
-def _prune_pending_logins():
-    now = time.time()
-    expired = [k for k, v in _pending_logins.items() if now - v.get('created', 0) > PENDING_LOGIN_TTL_SEC]
-    for k in expired:
-        _pending_logins.pop(k, None)
-
+# -------- Auth flow --------
 @app.route('/api/send-code', methods=['POST'])
 def api_send_code():
     try:
-        body = request.json or {}
-        phone = (body.get('phone') or '').strip()
+        phone = request.json.get('phone', '').strip()
         if not phone.startswith('+'):
             phone = '+' + phone.lstrip('+')
-        if not phone or len(phone) < 8:
-            return jsonify({'success': False, 'error': 'Invalid phone'}), 400
         result = run_async(tg_send_code(phone))
         if not result.get('success'):
             return jsonify(result), 400
-        with _pending_logins_lock:
-            _prune_pending_logins()
-            _pending_logins[result['session']] = {
-                'phone': phone,
-                'phone_code_hash': result['phone_code_hash'],
-                'created': time.time()
-            }
+        # Store temp login session in memory
+        _pending_logins[result['session']] = {
+            'phone': phone,
+            'phone_code_hash': result['phone_code_hash'],
+            'created': time.time()
+        }
         return jsonify({
             'success': True,
             'session_id': result['session'],
             'phone_masked': phone[:4] + '****' + phone[-2:]
         })
     except Exception as e:
-        traceback.print_exc()
         return jsonify({'success': False, 'error': str(e)}), 500
+
 
 @app.route('/api/verify-code', methods=['POST'])
 def api_verify_code():
     try:
-        data = request.json or {}
+        data = request.json
         session_id = data.get('session_id')
-        code = (data.get('code') or '').strip()
+        code = data.get('code', '').strip()
         password = data.get('password') or None
-        with _pending_logins_lock:
-            _prune_pending_logins()
-            pending = _pending_logins.get(session_id)
+        
+        pending = _pending_logins.get(session_id)
         if not pending:
-            return jsonify({'success': False,
-                            'error': 'Session expired. Request a new code.'}), 400
-
+            return jsonify({'success': False, 'error': 'Session expired'}), 400
+        
         result = run_async(tg_verify_code(
             session_id, pending['phone'], code,
             pending['phone_code_hash'], password
         ))
+        
         if not result.get('success'):
             if result.get('need_password'):
-                return jsonify({'success': False, 'need_password': True,
-                                'error': '2FA password required'})
-            return jsonify({'success': False,
-                            'error': result.get('error', 'Invalid code')}), 400
-
-        with _pending_logins_lock:
-            _pending_logins.pop(session_id, None)
-
+                return jsonify({'success': False, 'need_password': True, 'error': '2FA password required'})
+            return jsonify(result), 400
+        
+        # Save account to db
         user = result['user']
         account_id = user['id']
-        name = (f"{user['first_name']} {user['last_name']}".strip()
-                or user['username'] or str(account_id))
-
-        new_account = {
-            'id': account_id, 'name': name, 'phone': pending['phone'],
-            'username': user.get('username', ''),
-            'session_string': result['session_string'],
-            'active': True, 'auto_add_enabled': False,
-            'joined_target': False,
-            'added_at': datetime.now().isoformat(),
-            'stats': {'report_today': 0, 'report_total': 0,
-                      'add_today': 0, 'add_total': 0}
-        }
-
+        name = f"{user['first_name']} {user['last_name']}".strip() or user['username'] or str(account_id)
+        
         def _upd(d):
-            d['accounts'] = [a for a in d.get('accounts', [])
-                             if a['id'] != account_id]
-            d['accounts'].append(new_account)
-
-        try:
-            saved = db.update(_upd, f"Add account {name}")
-        except Exception as e:
-            return jsonify({
-                'success': False,
-                'error': f'Account verified, but DB read/write failed: {str(e)[:150]}'
-            }), 500
-
-        if not saved:
-            return jsonify({
-                'success': False,
-                'error': 'Account verified but failed to save to DB. Check GitHub token/repo.'
-            }), 500
-
-        # Confirm persisted account is actually present
-        check = db.read(force=True)
-        if not any(a.get('id') == account_id for a in check.get('accounts', [])):
-            return jsonify({
-                'success': False,
-                'error': 'Account did not persist in database after save.'
-            }), 500
-
+            # Remove if exists
+            d['accounts'] = [a for a in d.get('accounts', []) if a['id'] != account_id]
+            d['accounts'].append({
+                'id': account_id,
+                'name': name,
+                'phone': pending['phone'],
+                'username': user.get('username', ''),
+                'session_string': result['session_string'],
+                'active': True,
+                'auto_add_enabled': False,
+                'joined_target': False,
+                'added_at': datetime.now().isoformat(),
+                'stats': {
+                    'report_today': 0, 'report_total': 0,
+                    'add_today': 0, 'add_total': 0
+                }
+            })
+        db.update(_upd, f"Add account {name}")
+        
+        _pending_logins.pop(session_id, None)
+        
+        # Auto-join target group
         schedule_auto_join(account_id)
+        
         return jsonify({
             'success': True,
-            'redirect_url': '/report',
             'account': {'id': account_id, 'name': name, 'phone': pending['phone']}
         })
     except Exception as e:
         traceback.print_exc()
         return jsonify({'success': False, 'error': str(e)}), 500
 
+
+# Pending login sessions (in-memory, temp)
+_pending_logins = {}
+
+
+# -------- REPORT (MAIN FEATURE) --------
 @app.route('/api/report-scammer', methods=['POST'])
 def api_report_scammer():
     try:
-        data = request.json or {}
-        username = (data.get('username') or '').strip()
+        data = request.json
+        username = data.get('username', '').strip()
         reason = data.get('reason', 'scam')
         message = data.get('message', '')
+        
         if not username:
             return jsonify({'success': False, 'error': 'Username required'}), 400
-        return jsonify(mass_report(username, reason, message))
+        
+        result = mass_report(username, reason, message)
+        return jsonify(result)
     except Exception as e:
         traceback.print_exc()
         return jsonify({'success': False, 'error': str(e)}), 500
+
 
 @app.route('/api/report-history', methods=['GET'])
 def api_report_history():
     try:
         limit = int(request.args.get('limit', 50))
-        data = db.read(force=True)
+        data = db.read()
         history = data.get('history', [])[-limit:]
         return jsonify({'success': True, 'history': list(reversed(history))})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 
+
+# -------- Chats --------
 @app.route('/api/get-chats', methods=['POST'])
 def api_get_chats():
     try:
-        account_id = (request.json or {}).get('accountId')
-        data = db.read(force=True)
-        acc = next((a for a in data.get('accounts', [])
-                    if a['id'] == account_id), None)
+        account_id = request.json.get('accountId')
+        data = db.read()
+        acc = next((a for a in data.get('accounts', []) if a['id'] == account_id), None)
         if not acc:
             return jsonify({'success': False, 'error': 'Account not found'}), 404
-        return jsonify(run_async(tg_get_chats(acc['session_string'])))
+        result = run_async(tg_get_chats(acc['session_string']))
+        return jsonify(result)
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 
+
+# -------- Config / Auto-add --------
 @app.route('/api/config', methods=['GET', 'POST'])
 def api_config():
     try:
         if request.method == 'GET':
-            data = db.read(force=True)
+            data = db.read()
             return jsonify({'success': True, 'config': data.get('config', {})})
-        new_config = request.json or {}
-        merged = {}
+        
+        new_config = request.json
         def _upd(d):
-            nonlocal merged
             d.setdefault('config', {}).update(new_config)
-            merged = dict(d['config'])
-        ok = db.update(_upd, "Update config")
-        if not ok:
-            return jsonify({'success': False, 'error': 'DB write failed'}), 500
-        return jsonify({'success': True, 'config': merged})
+        db.update(_upd, "Update config")
+        return jsonify({'success': True, 'config': new_config})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
+
 
 @app.route('/api/auto-add/toggle', methods=['POST'])
 def api_auto_add_toggle():
     try:
-        body = request.json or {}
-        enabled = bool(body.get('enabled'))
-        account_id = body.get('accountId')
+        enabled = bool(request.json.get('enabled'))
+        account_id = request.json.get('accountId')
+        
         def _upd(d):
             if account_id:
                 for a in d.get('accounts', []):
@@ -1240,13 +952,13 @@ def api_auto_add_toggle():
                         break
             else:
                 d.setdefault('config', {})['auto_add_enabled'] = enabled
-        ok = db.update(_upd, f"Toggle auto-add {enabled}")
-        if not ok:
-            return jsonify({'success': False, 'error': 'DB write failed'}), 500
+        db.update(_upd, f"Toggle auto-add {enabled}")
         return jsonify({'success': True})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 
+
+# -------- Stats --------
 @app.route('/api/stats', methods=['GET'])
 def api_stats():
     try:
@@ -1261,26 +973,32 @@ def api_stats():
             'added_total': s.get('added_total', 0),
             'total_accounts': len(data.get('accounts', [])),
             'active_workers': 1 if data.get('config', {}).get('auto_add_enabled') else 0,
-            'last_cleanup': data.get('last_cleanup'),
             'server_name': os.environ.get('RENDER_SERVICE_NAME', 'local')
         })
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 
+
 # ============================================================
-# BOOTSTRAP
+# STARTUP
 # ============================================================
 def _bootstrap():
+    """Initialize db and start background workers"""
     try:
+        # Ensure db exists
         db.read(force=True)
         print("✅ DB loaded")
     except Exception as e:
         print(f"DB init error: {e}")
+    
+    # Start auto-add worker
     start_auto_add_worker()
-    start_cleanup_worker()
     print("✅ Workers started")
 
+
+# Start background worker at import
 _bootstrap()
+
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
