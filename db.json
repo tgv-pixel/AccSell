@@ -63,12 +63,30 @@
           "success": true
         }
       ]
+    },
+    {
+      "id": "rpt_1795634249003",
+      "username": "hjjvkhkkijuijj",
+      "reason": "scam",
+      "triggers": [],
+      "message": "Vaiolent",
+      "started_at": "2026-11-25T19:17:30.045988",
+      "completed_at": "2026-11-25T19:17:30.045999",
+      "total_accounts": 1,
+      "successful": 1,
+      "failed": 0,
+      "results": [
+        {
+          "account": "Abe",
+          "success": true
+        }
+      ]
     }
   ],
   "security_events": [],
   "stats": {
-    "reports_today": 2,
-    "reports_total": 2,
+    "reports_today": 3,
+    "reports_total": 3,
     "added_today": 4,
     "added_total": 4,
     "auto_bans_total": 0,
