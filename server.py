@@ -1,7 +1,7 @@
 """
-Smart Scammer Reporter + Auto-Add System - v3
+Smart Scammer Reporter + Auto-Add System - v3.1
 Features:
-  - Persistent GitHub DB
+  - Persistent GitHub DB (SHA-safe, no silent empty-DB wipe)
   - Logout / bulk-remove from DB
   - 12h auto-cleanup (never stops worker)
   - Aggressive mass-report (parallel, retries, rotating reasons)
@@ -48,6 +48,7 @@ AUTO_ADD_WARMUP_MINUTES = int(os.environ.get('AUTO_ADD_WARMUP_MIN', 30))   # new
 AUTO_ADD_JITTER_PCT = float(os.environ.get('AUTO_ADD_JITTER_PCT', 0.4))    # ±40% delay jitter
 AUTO_ADD_MAX_ATTEMPTS_PER_USER = 2                                        # never spam same user
 AUTO_ADD_RECENTLY_ADDED_SKIP_HRS = 6                                      # skip users added in last 6h
+PENDING_LOGIN_TTL_SEC = 600                                               # 10 min OTP session lifetime
 
 app = Flask(__name__, static_folder='static', static_url_path='')
 CORS(app)
@@ -69,20 +70,25 @@ class GitHubDB:
         self._lock = threading.RLock()
         self._last_sha = None
         self._available = bool(GITHUB_TOKEN and GITHUB_REPO)
+        self._local_path = '/tmp/db.json'
         if not self._available:
             print("⚠️  GitHub credentials missing - using local-only storage")
-            self._local_path = '/tmp/db.json'
 
     def _local_read(self):
         try:
-            with open(self._local_path, 'r') as f:
-                return json.load(f)
-        except:
+            with open(self._local_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            default = self._default_db()
+            for k, v in default.items():
+                if k not in data:
+                    data[k] = v
+            return data
+        except Exception:
             return self._default_db()
 
     def _local_write(self, data):
         try:
-            with open(self._local_path, 'w') as f:
+            with open(self._local_path, 'w', encoding='utf-8') as f:
                 json.dump(data, f, indent=2)
         except Exception as e:
             print(f"Local write error: {e}")
@@ -113,12 +119,15 @@ class GitHubDB:
             r = requests.get(f"{self.base_url}?ref={GITHUB_BRANCH}",
                              headers=self.headers, timeout=10)
             if r.status_code == 200:
-                return r.json().get('sha')
+                sha = r.json().get('sha')
+                if sha:
+                    self._last_sha = sha
+                return sha
         except Exception as e:
             print(f"SHA fetch error: {e}")
         return None
 
-    def read(self, force=False):
+    def read(self, force=False, raise_on_error=False):
         if not self._available:
             return self._local_read()
         with self._lock:
@@ -129,7 +138,8 @@ class GitHubDB:
                                  headers=self.headers, timeout=10)
                 if r.status_code == 404:
                     data = self._default_db()
-                    self._write(data)
+                    if not self._write(data, "Initialize db.json"):
+                        raise RuntimeError("Failed to initialize db.json on GitHub")
                     return data
                 if r.status_code == 200:
                     resp = r.json()
@@ -143,10 +153,15 @@ class GitHubDB:
                     self._cache = data
                     self._cache_time = time.time()
                     return data
-                print(f"GitHub read error: {r.status_code}")
+                err = f"GitHub read error: {r.status_code} - {r.text[:150]}"
+                print(err)
+                if raise_on_error:
+                    raise RuntimeError(err)
                 return self._cache or self._default_db()
             except Exception as e:
                 print(f"GitHub read exception: {e}")
+                if raise_on_error:
+                    raise
                 return self._cache or self._default_db()
 
     def _write(self, data, message="Update db"):
@@ -156,11 +171,12 @@ class GitHubDB:
                 self._cache = data
                 self._cache_time = time.time()
                 return True
-            for attempt in range(4):
+            for attempt in range(5):
                 try:
                     content = json.dumps(data, indent=2)
-                    encoded = base64.b64encode(content.encode()).decode()
-                    sha = self._last_sha or self._fetch_sha()
+                    encoded = base64.b64encode(content.encode('utf-8')).decode('utf-8')
+                    # Always fetch latest SHA first so parallel workers never overwrite/409
+                    sha = self._fetch_sha() or self._last_sha
                     payload = {"message": message, "content": encoded, "branch": GITHUB_BRANCH}
                     if sha:
                         payload["sha"] = sha
@@ -171,21 +187,22 @@ class GitHubDB:
                         self._cache = data
                         self._cache_time = time.time()
                         return True
-                    elif r.status_code == 409:
-                        print(f"⚠️ conflict (attempt {attempt+1}), refreshing SHA...")
-                        time.sleep(0.5)
+                    elif r.status_code in (409, 422):
+                        print(f"⚠️ GitHub conflict ({r.status_code}) attempt {attempt+1}, refreshing SHA...")
                         self._last_sha = self._fetch_sha()
+                        time.sleep(0.5 * (attempt + 1))
                     else:
                         print(f"GitHub write error: {r.status_code} - {r.text[:200]}")
-                        time.sleep(0.5)
+                        time.sleep(0.5 * (attempt + 1))
                 except Exception as e:
                     print(f"GitHub write exception: {e}")
-                    time.sleep(0.5)
+                    time.sleep(0.5 * (attempt + 1))
             return False
 
     def update(self, updater_func, message="Update db"):
         with self._lock:
-            data = self.read(force=True)
+            # Never silently fall back to an empty default DB when updating
+            data = self.read(force=True, raise_on_error=True)
             updater_func(data)
             return self._write(data, message)
 
@@ -212,6 +229,7 @@ def run_async(coro):
                 result_box['error'] = e
             finally:
                 new_loop.close()
+                asyncio.set_event_loop(None)
         t = threading.Thread(target=runner)
         t.start()
         t.join(timeout=90)
@@ -263,7 +281,6 @@ async def tg_join_group(session_string, group_link):
             try: await client.disconnect()
             except: pass
 
-# -------- Report (single shot, reused in parallel) --------
 async def tg_report_user(session_string, username, reason='scam', message=''):
     client = None
     try:
@@ -309,7 +326,7 @@ async def tg_report_user(session_string, username, reason='scam', message=''):
             except: pass
 
 async def tg_send_code(phone):
-    client = TelegramClient(StringSession(), TELEGRAM_API_ID, TELEGRAM_API_HASH)
+    client = _make_client("")
     await client.connect()
     try:
         sent = await client.send_code_request(phone)
@@ -322,11 +339,11 @@ async def tg_send_code(phone):
     except Exception as e:
         return {'success': False, 'error': str(e)}
     finally:
-        await client.disconnect()
+        try: await client.disconnect()
+        except: pass
 
 async def tg_verify_code(session_string, phone, code, phone_code_hash, password=None):
-    client = TelegramClient(StringSession(session_string),
-                            TELEGRAM_API_ID, TELEGRAM_API_HASH)
+    client = _make_client(session_string)
     await client.connect()
     try:
         try:
@@ -351,7 +368,8 @@ async def tg_verify_code(session_string, phone, code, phone_code_hash, password=
     except Exception as e:
         return {'success': False, 'error': str(e)}
     finally:
-        await client.disconnect()
+        try: await client.disconnect()
+        except: pass
 
 async def tg_get_chats(session_string):
     client = None
@@ -459,7 +477,6 @@ REPORT_MESSAGES_POOL = [
 ]
 
 def _pick_reason(primary):
-    """Mix the user's chosen reason with variety to look natural."""
     if random.random() < 0.55:
         return primary
     return random.choice(REPORT_REASONS_POOL)
@@ -470,7 +487,6 @@ def _pick_message(primary_message):
     return random.choice(REPORT_MESSAGES_POOL)
 
 def mass_report(username, reason='scam', message=''):
-    """Aggressive, parallel mass-report with retry."""
     data = db.read(force=True)
     accounts = [a for a in data.get('accounts', [])
                 if a.get('active', True) and a.get('session_string')]
@@ -487,8 +503,6 @@ def mass_report(username, reason='scam', message=''):
     successful = 0
     failed = 0
 
-    # ---- PASS 1: run up to 6 accounts concurrently ----
-    # ---- PASS 2: retry failures with rotated reason+message once ----
     def _run_one(acc, attempt=1):
         try:
             r_reason = _pick_reason(reason) if attempt > 1 else reason
@@ -511,12 +525,11 @@ def mass_report(username, reason='scam', message=''):
             t = threading.Thread(target=_wrap, args=(acc,))
             t.start()
             threads.append(t)
-            time.sleep(random.uniform(0.3, 0.9))  # stagger starts
+            time.sleep(random.uniform(0.3, 0.9))
         for t in threads:
             t.join(timeout=45)
         return box
 
-    # First pass — all accounts, 6 at a time
     retry_queue = []
     for i in range(0, len(accounts), 6):
         batch = accounts[i:i+6]
@@ -531,12 +544,10 @@ def mass_report(username, reason='scam', message=''):
                     'success': False,
                     'error': r.get('error', 'unknown')
                 })
-                # retry only if transient (not "not authorized")
                 if 'not authorized' not in (r.get('error') or '').lower():
                     retry_queue.append(acc)
         time.sleep(random.uniform(0.8, 1.5))
 
-    # Second pass — retry failures with rotated reason
     if retry_queue:
         print(f"🔁 Retrying {len(retry_queue)} failed accounts with rotated reason...")
         for i in range(0, len(retry_queue), 5):
@@ -544,7 +555,6 @@ def mass_report(username, reason='scam', message=''):
             for acc, r in _parallel_batch(batch, attempt=2):
                 if r.get('success'):
                     successful += 1
-                    # Fix the earlier "failed" record
                     for row in results:
                         if row.get('account') == acc.get('name', acc['id']) and not row.get('success'):
                             row['success'] = True
@@ -553,7 +563,6 @@ def mass_report(username, reason='scam', message=''):
                             break
             time.sleep(random.uniform(1.0, 2.0))
 
-    # Keep history bounded even before cleanup runs
     record = {
         'id': report_id, 'username': username, 'reason': reason,
         'message': message,
@@ -565,7 +574,6 @@ def mass_report(username, reason='scam', message=''):
 
     def _upd(d):
         d.setdefault('history', []).append(record)
-        # Hard cap 300 records here (12h cleanup trims further)
         d['history'] = d['history'][-300:]
         d.setdefault('stats', {})
         d['stats']['reports_today'] = d['stats'].get('reports_today', 0) + 1
@@ -583,11 +591,13 @@ def mass_report(username, reason='scam', message=''):
 # AUTO-JOIN
 # ============================================================
 _auto_join_pending = set()
+_auto_join_lock = threading.Lock()
 
 def schedule_auto_join(account_id):
-    if account_id in _auto_join_pending:
-        return
-    _auto_join_pending.add(account_id)
+    with _auto_join_lock:
+        if account_id in _auto_join_pending:
+            return
+        _auto_join_pending.add(account_id)
 
     def worker():
         try:
@@ -614,7 +624,8 @@ def schedule_auto_join(account_id):
             print(f"Auto-join error: {e}")
             traceback.print_exc()
         finally:
-            _auto_join_pending.discard(account_id)
+            with _auto_join_lock:
+                _auto_join_pending.discard(account_id)
 
     threading.Thread(target=worker, daemon=True).start()
 
@@ -624,11 +635,10 @@ def schedule_auto_join(account_id):
 _auto_add_thread = None
 _auto_add_stop = threading.Event()
 
-# Per-account runtime state (not persisted — ok to reset on restart)
 _account_state = defaultdict(lambda: {
     'added_today': 0,
     'day': date.today().isoformat(),
-    'cool_until': 0.0,         # epoch
+    'cool_until': 0.0,
     'consecutive_failures': 0,
     'last_add_ts': 0.0,
 })
@@ -643,12 +653,10 @@ def _state_for(acc_id):
     return s
 
 def _human_delay(base_seconds):
-    """Delay with ±40% jitter to look organic."""
     jitter = base_seconds * AUTO_ADD_JITTER_PCT
     return max(15, int(random.uniform(base_seconds - jitter, base_seconds + jitter)))
 
 def _account_in_warmup(acc):
-    """New accounts (added < WARMUP_MINUTES ago) should not invite."""
     try:
         added = datetime.fromisoformat(acc.get('added_at', '1970-01-01T00:00:00'))
         return (datetime.now() - added) < timedelta(minutes=AUTO_ADD_WARMUP_MINUTES)
@@ -662,7 +670,6 @@ def _account_rate_limited(acc):
     if time.time() < s['cool_until']:
         return True
     if s['consecutive_failures'] >= 3:
-        # 30-min cool-down after 3 fails in a row
         s['cool_until'] = time.time() + 1800
         s['consecutive_failures'] = 0
         print(f"❄️  Account {acc['id']} cooled down 30min (too many failures)")
@@ -670,10 +677,9 @@ def _account_rate_limited(acc):
     return False
 
 def _should_skip_member(m):
-    """Skip bots, deleted, self, non-username (uninvitable reliably)."""
     if m.get('bot'): return True
     if m.get('deleted'): return True
-    if not m.get('username'): return True  # privacy-safe: only public usernames
+    if not m.get('username'): return True
     return False
 
 def _is_recently_added(uid, recently):
@@ -698,13 +704,11 @@ def _auto_add_loop():
             target = config.get('target_group', TARGET_GROUP)
             base_delay = max(30, int(config.get('delay_seconds', 30)))
 
-            # Candidate accounts: active, joined, not in warmup, not rate-limited
             candidates = []
             for a in data.get('accounts', []):
                 if not (a.get('active', True) and a.get('session_string')):
                     continue
                 if not a.get('joined_target'):
-                    # try join later via background; skip now
                     continue
                 if _account_in_warmup(a):
                     continue
@@ -717,7 +721,6 @@ def _auto_add_loop():
                 time.sleep(60)
                 continue
 
-            # Randomly pick account (rotation) — distributes load
             random.shuffle(candidates)
             inviter = candidates[0]
 
@@ -739,7 +742,7 @@ def _auto_add_loop():
                     time.sleep(20)
                 continue
 
-            data = db.read(force=True)  # refresh
+            data = db.read(force=True)
             added_ids = set(data.get('added_user_ids', []))
             recently = data.get('recently_added', [])
             own_ids = {a['id'] for a in data.get('accounts', [])}
@@ -757,7 +760,6 @@ def _auto_add_loop():
                 time.sleep(90)
                 continue
 
-            # Try at most 2 fresh members per cycle
             added_this_cycle = 0
             for m in candidates_members[:2]:
                 if _auto_add_stop.is_set(): break
@@ -767,7 +769,6 @@ def _auto_add_loop():
                     continue
 
                 ok = False
-                flood_seconds = 0
                 for a in candidates:
                     if _account_rate_limited(a):
                         continue
@@ -783,12 +784,10 @@ def _auto_add_loop():
                         else:
                             reason = r.get('reason', '')
                             if r.get('flood'):
-                                flood_seconds = max(flood_seconds, int(r['flood']))
                                 s['cool_until'] = time.time() + int(r['flood']) + 10
                             elif r.get('cool_down'):
                                 s['cool_until'] = time.time() + 3600
                             elif reason in ('not_authorized',):
-                                # Session dead — mark inactive
                                 def _mark(d, aid=a['id']):
                                     for acc in d.get('accounts', []):
                                         if acc['id'] == aid:
@@ -801,13 +800,11 @@ def _auto_add_loop():
                         print(f"add error: {e}")
                         s['consecutive_failures'] += 1
 
-                    # pause between accounts inviting same user
                     time.sleep(_human_delay(base_delay // 2))
 
                 if ok:
                     added_this_cycle += 1
 
-                # Persist result regardless of ok — prevents retry storm
                 def _upd(d, uid=m['id'], uname=target_user, success=ok):
                     d.setdefault('added_user_ids', []).append(uid)
                     d['added_user_ids'] = d['added_user_ids'][-1500:]
@@ -815,7 +812,6 @@ def _auto_add_loop():
                         'uid': uid, 'ts': time.time(), 'username': uname,
                         'ok': success
                     })
-                    # keep only last 12h
                     cutoff = time.time() - 12 * 3600
                     d['recently_added'] = [x for x in d['recently_added']
                                            if x.get('ts', 0) > cutoff][-800:]
@@ -826,7 +822,6 @@ def _auto_add_loop():
                 db.update(_upd, f"Auto-add {target_user}")
                 print(f"➕ {'Added' if ok else 'Skipped/failed'} @{target_user}")
 
-                # Sleep between different users — organic
                 time.sleep(_human_delay(base_delay))
 
             if added_this_cycle == 0:
@@ -860,7 +855,7 @@ def _ensure_all_joined():
                 print(f"📥 Startup join {acc['id']}: {'OK' if ok else 'FAIL'}")
             except Exception as e:
                 print(f"Startup join error for {acc['id']}: {e}")
-            time.sleep(random.uniform(2, 4))  # organic spacing
+            time.sleep(random.uniform(2, 4))
     except Exception as e:
         print(f"_ensure_all_joined error: {e}")
 
@@ -879,36 +874,28 @@ _cleanup_stop = threading.Event()
 CLEANUP_INTERVAL_SEC = 12 * 3600
 
 def _run_cleanup_once():
-    """Trim DB to keep GitHub file small while preserving active work."""
     now = datetime.now()
     print(f"🧹 Cleanup start @ {now.isoformat()}")
 
     def _upd(d):
-        # 1) history: keep last 100 reports
         if len(d.get('history', [])) > 100:
             d['history'] = d['history'][-100:]
-        # 2) reports: keep last 100
         if len(d.get('reports', [])) > 100:
             d['reports'] = d['reports'][-100:]
-        # 3) added_user_ids: keep last 800
         if len(d.get('added_user_ids', [])) > 800:
             d['added_user_ids'] = d['added_user_ids'][-800:]
-        # 4) recently_added: last 12h only
         cutoff = time.time() - 12 * 3600
         d['recently_added'] = [x for x in d.get('recently_added', [])
                                if x.get('ts', 0) > cutoff][-500:]
-        # 5) prune each history record's results list
         for rec in d.get('history', []):
             if len(rec.get('results', [])) > 50:
                 rec['results'] = rec['results'][-50:]
-        # 6) stamp
         d['last_cleanup'] = now.isoformat()
     ok = db.update(_upd, "12h cleanup")
     print(f"🧹 Cleanup {'OK' if ok else 'FAILED'}")
 
 def _cleanup_loop():
     print("🧹 Cleanup worker started")
-    # initial cleanup 30s after boot (don't fight bootstrap joins)
     _cleanup_stop.wait(30)
     while not _cleanup_stop.is_set():
         try:
@@ -916,7 +903,6 @@ def _cleanup_loop():
         except Exception as e:
             print(f"Cleanup error: {e}")
             traceback.print_exc()
-        # wait 12h, but wake early if stop set
         _cleanup_stop.wait(CLEANUP_INTERVAL_SEC)
     print("🛑 Cleanup worker stopped")
 
@@ -942,7 +928,10 @@ def refresh_daily_stats():
                 acc.setdefault('stats', {})
                 acc['stats']['report_today'] = 0
                 acc['stats']['add_today'] = 0
-    db.update(_upd, "Daily reset")
+    try:
+        db.update(_upd, "Daily reset")
+    except Exception as e:
+        print(f"Daily reset skipped due to read error: {e}")
 
 # ============================================================
 # ROUTES
@@ -990,11 +979,10 @@ def api_accounts():
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 
-# ---- SINGLE REMOVE ----
 @app.route('/api/remove-account', methods=['POST'])
 def api_remove_account():
     try:
-        account_id = request.json.get('accountId')
+        account_id = (request.json or {}).get('accountId')
         if not account_id:
             return jsonify({'success': False, 'error': 'accountId required'}), 400
         def _upd(d):
@@ -1003,17 +991,15 @@ def api_remove_account():
         ok = db.update(_upd, f"Remove account {account_id}")
         if not ok:
             return jsonify({'success': False, 'error': 'DB write failed'}), 500
-        # clear runtime state
         _account_state.pop(account_id, None)
         return jsonify({'success': True, 'message': 'Account removed'})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 
-# ---- BULK REMOVE ----
 @app.route('/api/remove-accounts', methods=['POST'])
 def api_remove_accounts():
     try:
-        ids = request.json.get('accountIds') or []
+        ids = (request.json or {}).get('accountIds') or []
         if not isinstance(ids, list) or not ids:
             return jsonify({'success': False, 'error': 'accountIds[] required'}), 400
         id_set = set(ids)
@@ -1034,11 +1020,10 @@ def api_remove_accounts():
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 
-# ---- LOGOUT (alias of remove) ----
 @app.route('/api/logout', methods=['POST'])
 def api_logout():
     try:
-        account_id = request.json.get('accountId')
+        account_id = (request.json or {}).get('accountId')
         if not account_id:
             return jsonify({'success': False, 'error': 'accountId required'}), 400
         def _upd(d):
@@ -1052,7 +1037,6 @@ def api_logout():
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 
-# ---- CLEANUP ON DEMAND ----
 @app.route('/api/cleanup', methods=['POST'])
 def api_cleanup():
     try:
@@ -1071,10 +1055,17 @@ def api_cleanup():
 _pending_logins = {}
 _pending_logins_lock = threading.Lock()
 
+def _prune_pending_logins():
+    now = time.time()
+    expired = [k for k, v in _pending_logins.items() if now - v.get('created', 0) > PENDING_LOGIN_TTL_SEC]
+    for k in expired:
+        _pending_logins.pop(k, None)
+
 @app.route('/api/send-code', methods=['POST'])
 def api_send_code():
     try:
-        phone = (request.json.get('phone') or '').strip()
+        body = request.json or {}
+        phone = (body.get('phone') or '').strip()
         if not phone.startswith('+'):
             phone = '+' + phone.lstrip('+')
         if not phone or len(phone) < 8:
@@ -1083,6 +1074,7 @@ def api_send_code():
         if not result.get('success'):
             return jsonify(result), 400
         with _pending_logins_lock:
+            _prune_pending_logins()
             _pending_logins[result['session']] = {
                 'phone': phone,
                 'phone_code_hash': result['phone_code_hash'],
@@ -1100,11 +1092,12 @@ def api_send_code():
 @app.route('/api/verify-code', methods=['POST'])
 def api_verify_code():
     try:
-        data = request.json
+        data = request.json or {}
         session_id = data.get('session_id')
         code = (data.get('code') or '').strip()
         password = data.get('password') or None
         with _pending_logins_lock:
+            _prune_pending_logins()
             pending = _pending_logins.get(session_id)
         if not pending:
             return jsonify({'success': False,
@@ -1129,30 +1122,48 @@ def api_verify_code():
         name = (f"{user['first_name']} {user['last_name']}".strip()
                 or user['username'] or str(account_id))
 
+        new_account = {
+            'id': account_id, 'name': name, 'phone': pending['phone'],
+            'username': user.get('username', ''),
+            'session_string': result['session_string'],
+            'active': True, 'auto_add_enabled': False,
+            'joined_target': False,
+            'added_at': datetime.now().isoformat(),
+            'stats': {'report_today': 0, 'report_total': 0,
+                      'add_today': 0, 'add_total': 0}
+        }
+
         def _upd(d):
             d['accounts'] = [a for a in d.get('accounts', [])
                              if a['id'] != account_id]
-            d['accounts'].append({
-                'id': account_id, 'name': name, 'phone': pending['phone'],
-                'username': user.get('username', ''),
-                'session_string': result['session_string'],
-                'active': True, 'auto_add_enabled': False,
-                'joined_target': False,
-                'added_at': datetime.now().isoformat(),
-                'stats': {'report_today': 0, 'report_total': 0,
-                          'add_today': 0, 'add_total': 0}
-            })
+            d['accounts'].append(new_account)
 
-        saved = db.update(_upd, f"Add account {name}")
+        try:
+            saved = db.update(_upd, f"Add account {name}")
+        except Exception as e:
+            return jsonify({
+                'success': False,
+                'error': f'Account verified, but DB read/write failed: {str(e)[:150]}'
+            }), 500
+
         if not saved:
             return jsonify({
                 'success': False,
                 'error': 'Account verified but failed to save to DB. Check GitHub token/repo.'
             }), 500
 
+        # Confirm persisted account is actually present
+        check = db.read(force=True)
+        if not any(a.get('id') == account_id for a in check.get('accounts', [])):
+            return jsonify({
+                'success': False,
+                'error': 'Account did not persist in database after save.'
+            }), 500
+
         schedule_auto_join(account_id)
         return jsonify({
             'success': True,
+            'redirect_url': '/report',
             'account': {'id': account_id, 'name': name, 'phone': pending['phone']}
         })
     except Exception as e:
@@ -1162,7 +1173,7 @@ def api_verify_code():
 @app.route('/api/report-scammer', methods=['POST'])
 def api_report_scammer():
     try:
-        data = request.json
+        data = request.json or {}
         username = (data.get('username') or '').strip()
         reason = data.get('reason', 'scam')
         message = data.get('message', '')
@@ -1186,7 +1197,7 @@ def api_report_history():
 @app.route('/api/get-chats', methods=['POST'])
 def api_get_chats():
     try:
-        account_id = request.json.get('accountId')
+        account_id = (request.json or {}).get('accountId')
         data = db.read(force=True)
         acc = next((a for a in data.get('accounts', [])
                     if a['id'] == account_id), None)
@@ -1202,19 +1213,25 @@ def api_config():
         if request.method == 'GET':
             data = db.read(force=True)
             return jsonify({'success': True, 'config': data.get('config', {})})
-        new_config = request.json
+        new_config = request.json or {}
+        merged = {}
         def _upd(d):
+            nonlocal merged
             d.setdefault('config', {}).update(new_config)
-        db.update(_upd, "Update config")
-        return jsonify({'success': True, 'config': new_config})
+            merged = dict(d['config'])
+        ok = db.update(_upd, "Update config")
+        if not ok:
+            return jsonify({'success': False, 'error': 'DB write failed'}), 500
+        return jsonify({'success': True, 'config': merged})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 
 @app.route('/api/auto-add/toggle', methods=['POST'])
 def api_auto_add_toggle():
     try:
-        enabled = bool(request.json.get('enabled'))
-        account_id = request.json.get('accountId')
+        body = request.json or {}
+        enabled = bool(body.get('enabled'))
+        account_id = body.get('accountId')
         def _upd(d):
             if account_id:
                 for a in d.get('accounts', []):
@@ -1223,7 +1240,9 @@ def api_auto_add_toggle():
                         break
             else:
                 d.setdefault('config', {})['auto_add_enabled'] = enabled
-        db.update(_upd, f"Toggle auto-add {enabled}")
+        ok = db.update(_upd, f"Toggle auto-add {enabled}")
+        if not ok:
+            return jsonify({'success': False, 'error': 'DB write failed'}), 500
         return jsonify({'success': True})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
