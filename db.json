@@ -45,12 +45,30 @@
           "error": "Cannot find: Nobody is using this username, or the username is unacceptable. If the latter, i"
         }
       ]
+    },
+    {
+      "id": "rpt_1795606950661",
+      "username": "hjjvkhkkijuijj",
+      "reason": "scam",
+      "triggers": [],
+      "message": "",
+      "started_at": "2026-11-25T11:42:31.660907",
+      "completed_at": "2026-11-25T11:42:31.660917",
+      "total_accounts": 1,
+      "successful": 1,
+      "failed": 0,
+      "results": [
+        {
+          "account": "Abe",
+          "success": true
+        }
+      ]
     }
   ],
   "security_events": [],
   "stats": {
-    "reports_today": 1,
-    "reports_total": 1,
+    "reports_today": 2,
+    "reports_total": 2,
     "added_today": 4,
     "added_total": 4,
     "auto_bans_total": 0,
