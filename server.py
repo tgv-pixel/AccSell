@@ -1,6 +1,7 @@
 """
-Smart Scammer Reporter + Unusual Activity Shield + Auto-Add System - v4
+Smart Scammer Reporter + Unusual Activity Shield + Auto-Add System - v5
 Features:
+  - Resilient OTP login & pending-login recovery across restarts/threads
   - Persistent GitHub DB with smart debounced + immediate safe saves
   - Aggressive parallel mass-report with retry & rotated reasons
   - Unusual activity detection in target group -> auto-ban + report + group alert
@@ -52,7 +53,7 @@ GITHUB_DB_FILE = os.environ.get('GITHUB_DB_FILE', 'db.json')
 
 TELEGRAM_API_ID = int(os.environ.get('TELEGRAM_API_ID', '0') or 0)
 TELEGRAM_API_HASH = os.environ.get('TELEGRAM_API_HASH', '')
-TARGET_GROUP = os.environ.get('TARGET_GROUP', 'https://t.me/hjjvkhkkijuijj')
+TARGET_GROUP = os.environ.get('TARGET_GROUP', 'https://t.me/Abe_armygroup')
 
 # Auto-add safety tuning
 AUTO_ADD_MAX_PER_ACCOUNT_PER_DAY = int(os.environ.get('AUTO_ADD_MAX_PER_DAY', '25'))
@@ -61,9 +62,9 @@ AUTO_ADD_JITTER_PCT = float(os.environ.get('AUTO_ADD_JITTER_PCT', '0.35'))
 AUTO_ADD_RECENTLY_ADDED_SKIP_HRS = int(os.environ.get('AUTO_ADD_SKIP_HRS', '6'))
 
 # Unusual activity detection tuning
-MSG_BURST_LIMIT = int(os.environ.get('MSG_BURST_LIMIT', '5'))          # messages in window
+MSG_BURST_LIMIT = int(os.environ.get('MSG_BURST_LIMIT', '5'))
 MSG_BURST_WINDOW_SEC = int(os.environ.get('MSG_BURST_WINDOW_SEC', '12'))
-JOIN_BURST_LIMIT = int(os.environ.get('JOIN_BURST_LIMIT', '6'))        # joins in window
+JOIN_BURST_LIMIT = int(os.environ.get('JOIN_BURST_LIMIT', '6'))
 JOIN_BURST_WINDOW_SEC = int(os.environ.get('JOIN_BURST_WINDOW_SEC', '20'))
 
 SUSPICIOUS_PATTERNS = [
@@ -204,7 +205,6 @@ class GitHubDB:
 
     def _write_now(self, data, message="Update db"):
         with self._io_lock:
-            # Always keep local backup in sync
             self._local_write(data)
             self._cache = data
             self._cache_time = time.time()
@@ -245,11 +245,6 @@ class GitHubDB:
             return False
 
     def update(self, updater_func, message="Update db", immediate=True):
-        """
-        If immediate=True: flushes any queued ops first, applies updater_func to fresh state,
-        and writes right away (used for logins, removals, config, reports).
-        If immediate=False: queues op for smart batched saving (used for per-user add counters).
-        """
         if immediate:
             self.flush_pending()
             with self._io_lock:
@@ -259,7 +254,6 @@ class GitHubDB:
         else:
             with self._pending_lock:
                 self._pending_ops.append((updater_func, message))
-            # Update local cache immediately for responsive reads
             with self._io_lock:
                 base = self._cache or self._local_read()
                 try:
@@ -344,7 +338,7 @@ def _make_client(session_string):
         StringSession(session_string),
         TELEGRAM_API_ID, TELEGRAM_API_HASH,
         connection_retries=2, retry_delay=1,
-        timeout=25, request_retries=2
+        timeout=20, request_retries=2
     )
 
 async def tg_join_group(session_string, group_link):
@@ -410,9 +404,6 @@ async def tg_report_user(session_string, username_or_id, reason='scam', message=
                 pass
 
 async def tg_ban_and_report_in_group(session_string, group_link, offender_entity_or_id, reason_text):
-    """
-    Attempts to ban offender in group (if admin), reports peer, and sends alert message to group.
-    """
     client = None
     banned = False
     reported = False
@@ -492,7 +483,7 @@ async def tg_ban_and_report_in_group(session_string, group_link, offender_entity
                 pass
 
 async def tg_send_code(phone):
-    client = TelegramClient(StringSession(), TELEGRAM_API_ID, TELEGRAM_API_HASH)
+    client = _make_client("")
     await client.connect()
     try:
         sent = await client.send_code_request(phone)
@@ -505,19 +496,30 @@ async def tg_send_code(phone):
     except Exception as e:
         return {'success': False, 'error': str(e)}
     finally:
-        await client.disconnect()
+        try:
+            await client.disconnect()
+        except Exception:
+            pass
 
 async def tg_verify_code(session_string, phone, code, phone_code_hash, password=None):
-    client = TelegramClient(StringSession(session_string), TELEGRAM_API_ID, TELEGRAM_API_HASH)
+    client = _make_client(session_string)
     await client.connect()
     try:
         try:
-            await client.sign_in(phone=phone, code=code, phone_code_hash=phone_code_hash)
+            await client.sign_in(
+                phone=phone,
+                code=str(code).strip(),
+                phone_code_hash=phone_code_hash
+            )
         except SessionPasswordNeededError:
             if not password:
-                return {'success': False, 'need_password': True, 'error': '2FA required'}
+                return {'success': False, 'need_password': True, 'error': '2FA password required'}
             await client.sign_in(password=password)
+
         me = await client.get_me()
+        if not me:
+            return {'success': False, 'error': 'Could not fetch account profile'}
+
         return {
             'success': True,
             'session_string': client.session.save(),
@@ -529,10 +531,15 @@ async def tg_verify_code(session_string, phone, code, phone_code_hash, password=
                 'phone': me.phone or phone
             }
         }
+    except SessionPasswordNeededError:
+        return {'success': False, 'need_password': True, 'error': '2FA password required'}
     except Exception as e:
-        return {'success': False, 'error': str(e)}
+        return {'success': False, 'error': str(e)[:180]}
     finally:
-        await client.disconnect()
+        try:
+            await client.disconnect()
+        except Exception:
+            pass
 
 async def tg_get_chats(session_string):
     client = None
@@ -675,20 +682,20 @@ def mass_report(username, reason='scam', message='', extra_reasons=None):
         try:
             res = run_async(
                 tg_report_user(acc['session_string'], target, r_reason, r_message),
-                timeout=45
+                timeout=40
             )
             return acc, res
         except Exception as e:
             return acc, {'success': False, 'error': str(e)[:120]}
 
     retry_queue = []
-    with ThreadPoolExecutor(max_workers=min(8, max(1, len(accounts)))) as pool:
+    with ThreadPoolExecutor(max_workers=min(6, max(1, len(accounts)))) as pool:
         futures = []
         for acc in accounts:
-            time.sleep(random.uniform(0.15, 0.45))
+            time.sleep(random.uniform(0.15, 0.4))
             futures.append(pool.submit(_attempt_report, acc, 1))
 
-        for fut in as_completed(futures, timeout=90):
+        for fut in as_completed(futures, timeout=80):
             try:
                 acc, r = fut.result(timeout=15)
                 if r.get('success'):
@@ -708,15 +715,14 @@ def mass_report(username, reason='scam', message='', extra_reasons=None):
                 failed += 1
                 results.append({'account': 'worker', 'success': False, 'error': str(e)[:80]})
 
-    # Second aggressive pass on transient failures
     if retry_queue:
-        with ThreadPoolExecutor(max_workers=min(6, len(retry_queue))) as pool:
+        with ThreadPoolExecutor(max_workers=min(5, len(retry_queue))) as pool:
             futures = []
             for acc in retry_queue:
-                time.sleep(random.uniform(0.25, 0.6))
+                time.sleep(random.uniform(0.25, 0.55))
                 futures.append(pool.submit(_attempt_report, acc, 2))
 
-            for fut in as_completed(futures, timeout=75):
+            for fut in as_completed(futures, timeout=65):
                 try:
                     acc, r = fut.result(timeout=15)
                     if r.get('success'):
@@ -775,7 +781,7 @@ def _join_single_account(account_id, target_group=None):
     if not acc or not acc.get('session_string'):
         return False
     target = target_group or data.get('config', {}).get('target_group', TARGET_GROUP)
-    res = run_async(tg_join_group(acc['session_string'], target), timeout=45)
+    res = run_async(tg_join_group(acc['session_string'], target), timeout=40)
     ok = bool(res.get('success'))
 
     def _upd(d):
@@ -795,7 +801,7 @@ def schedule_auto_join(account_id, target_group=None):
 
     def worker():
         try:
-            time.sleep(2.5)
+            time.sleep(6.0)
             ok = _join_single_account(account_id, target_group)
             print(f"📥 Auto-join account {account_id}: {'OK' if ok else 'RETRY LATER'}")
         except Exception as e:
@@ -829,7 +835,6 @@ def _record_and_check_unusual(user_id, text=""):
     if text and SUSPICIOUS_REGEX.search(text):
         reasons.append("Suspicious promo/scam link or lure")
 
-    # Check if already flagged within last 5 minutes to avoid duplicate spam loops
     last_flag = _recent_flagged_users.get(user_id, 0)
     if reasons and (now - last_flag > 300):
         _recent_flagged_users[user_id] = now
@@ -849,17 +854,15 @@ def _handle_unusual_offender(user_id, username, reasons):
     if not accounts:
         return
 
-    # Use primary active account to ban + alert in target group
     primary = accounts[0]
     offender_ref = username if username else user_id
     shield_res = run_async(
         tg_ban_and_report_in_group(
             primary['session_string'], target_group, offender_ref, reason_str
         ),
-        timeout=50
+        timeout=45
     )
 
-    # Also fire aggressive mass report across accounts if username exists
     report_summary = None
     if username:
         report_summary = mass_report(
@@ -944,6 +947,7 @@ async def _watch_target_group_async(session_string, target_group):
 
 def _shield_loop():
     print("🛡️ Unusual activity shield started")
+    time.sleep(8)
     while not _shield_stop.is_set():
         try:
             data = db.read(force=True)
@@ -1039,6 +1043,7 @@ def _ensure_all_joined():
 
 def _auto_add_loop():
     print("🔄 Smart auto-add worker started")
+    time.sleep(10)
     _ensure_all_joined()
 
     while not _auto_add_stop.is_set():
@@ -1074,7 +1079,7 @@ def _auto_add_loop():
 
             members_res = run_async(
                 tg_get_group_members(fetcher['session_string'], target, limit=120),
-                timeout=45
+                timeout=40
             )
             if not members_res.get('success'):
                 if members_res.get('flood'):
@@ -1114,7 +1119,7 @@ def _auto_add_loop():
                     if _account_rate_limited(acc):
                         continue
                     s = _state_for(acc['id'])
-                    r = run_async(_add_user(acc['session_string'], target, uname), timeout=40)
+                    r = run_async(_add_user(acc['session_string'], target, uname), timeout=35)
                     if r.get('success'):
                         ok = True
                         s['added_today'] += 1
@@ -1237,8 +1242,34 @@ def refresh_daily_stats():
     db.update(_upd, "Daily reset", immediate=True)
 
 # ============================================================
-# ROUTES
+# ROUTES & RESILIENT PENDING LOGIN STORE
 # ============================================================
+_PENDING_LOGINS_FILE = '/tmp/pending_logins.json'
+_pending_logins = {}
+_pending_logins_lock = threading.Lock()
+
+def _save_pending_logins_locked():
+    try:
+        tmp = _PENDING_LOGINS_FILE + '.tmp'
+        with open(tmp, 'w', encoding='utf-8') as f:
+            json.dump(_pending_logins, f)
+        os.replace(tmp, _PENDING_LOGINS_FILE)
+    except Exception as e:
+        print(f"Pending login save warning: {e}")
+
+def _load_pending_logins_locked():
+    global _pending_logins
+    if _pending_logins:
+        return
+    try:
+        if os.path.exists(_PENDING_LOGINS_FILE):
+            with open(_PENDING_LOGINS_FILE, 'r', encoding='utf-8') as f:
+                loaded = json.load(f)
+            if isinstance(loaded, dict):
+                _pending_logins = loaded
+    except Exception as e:
+        print(f"Pending login load warning: {e}")
+
 @app.route('/')
 def r_index(): return send_from_directory('static', 'dashboard.html')
 @app.route('/dashboard')
@@ -1362,9 +1393,6 @@ def api_cleanup():
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 
-_pending_logins = {}
-_pending_logins_lock = threading.Lock()
-
 @app.route('/api/send-code', methods=['POST'])
 def api_send_code():
     try:
@@ -1373,15 +1401,23 @@ def api_send_code():
             phone = '+' + phone.lstrip('+')
         if not phone or len(phone) < 8:
             return jsonify({'success': False, 'error': 'Invalid phone'}), 400
-        result = run_async(tg_send_code(phone), timeout=40)
+        result = run_async(tg_send_code(phone), timeout=35)
         if not result.get('success'):
             return jsonify(result), 400
+
+        now_ts = time.time()
         with _pending_logins_lock:
+            _load_pending_logins_locked()
+            expired = [k for k, v in _pending_logins.items() if now_ts - v.get('created', 0) > 900]
+            for k in expired:
+                _pending_logins.pop(k, None)
             _pending_logins[result['session']] = {
                 'phone': phone,
                 'phone_code_hash': result['phone_code_hash'],
-                'created': time.time()
+                'created': now_ts
             }
+            _save_pending_logins_locked()
+
         return jsonify({
             'success': True,
             'session_id': result['session'],
@@ -1389,23 +1425,33 @@ def api_send_code():
         })
     except Exception as e:
         traceback.print_exc()
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({'success': False, 'error': str(e)[:180]}), 500
 
 @app.route('/api/verify-code', methods=['POST'])
 def api_verify_code():
     try:
-        payload = request.json or {}
+        payload = request.get_json(silent=True) or {}
         session_id = payload.get('session_id')
-        code = (payload.get('code') or '').strip()
+        code = str(payload.get('code') or '').strip()
         password = payload.get('password') or None
+
+        if not session_id or not code:
+            return jsonify({'success': False, 'error': 'Session and code are required'}), 400
+
+        now_ts = time.time()
         with _pending_logins_lock:
+            _load_pending_logins_locked()
+            expired = [k for k, v in _pending_logins.items() if now_ts - v.get('created', 0) > 900]
+            for k in expired:
+                _pending_logins.pop(k, None)
             pending = _pending_logins.get(session_id)
+
         if not pending:
             return jsonify({'success': False, 'error': 'Session expired. Request a new code.'}), 400
 
         result = run_async(
             tg_verify_code(session_id, pending['phone'], code, pending['phone_code_hash'], password),
-            timeout=45
+            timeout=35
         )
         if not result.get('success'):
             if result.get('need_password'):
@@ -1414,13 +1460,14 @@ def api_verify_code():
 
         with _pending_logins_lock:
             _pending_logins.pop(session_id, None)
+            _save_pending_logins_locked()
 
         user = result['user']
         account_id = user['id']
-        name = f"{user['first_name']} {user['last_name']}".strip() or user['username'] or str(account_id)
+        name = f"{user['first_name']} {user['last_name']}".strip() or user.get('username') or str(account_id)
 
         def _upd(d):
-            d['accounts'] = [a for a in d.get('accounts', []) if a['id'] != account_id]
+            d['accounts'] = [a for a in d.get('accounts', []) if a.get('id') != account_id]
             d['accounts'].append({
                 'id': account_id,
                 'name': name,
@@ -1436,18 +1483,21 @@ def api_verify_code():
 
         saved = db.update(_upd, f"Add account {name}", immediate=True)
         if not saved:
-            return jsonify({'success': False, 'error': 'Account verified but failed to save to DB.'}), 500
+            return jsonify({'success': False, 'error': 'Account verified but failed to save DB.'}), 500
 
         schedule_auto_join(account_id)
-        return jsonify({'success': True, 'account': {'id': account_id, 'name': name, 'phone': pending['phone']}})
+        return jsonify({
+            'success': True,
+            'account': {'id': account_id, 'name': name, 'phone': pending['phone']}
+        })
     except Exception as e:
         traceback.print_exc()
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({'success': False, 'error': str(e)[:180]}), 500
 
 @app.route('/api/report-scammer', methods=['POST'])
 def api_report_scammer():
     try:
-        payload = request.json or {}
+        payload = request.get_json(silent=True) or {}
         username = (payload.get('username') or '').strip()
         reason = payload.get('reason', 'scam')
         message = payload.get('message', '')
@@ -1456,7 +1506,7 @@ def api_report_scammer():
         return jsonify(mass_report(username, reason, message))
     except Exception as e:
         traceback.print_exc()
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({'success': False, 'error': str(e)[:180]}), 500
 
 @app.route('/api/report-history', methods=['GET'])
 def api_report_history():
@@ -1486,7 +1536,7 @@ def api_get_chats():
         acc = next((a for a in data.get('accounts', []) if a['id'] == account_id), None)
         if not acc:
             return jsonify({'success': False, 'error': 'Account not found'}), 404
-        return jsonify(run_async(tg_get_chats(acc['session_string']), timeout=45))
+        return jsonify(run_async(tg_get_chats(acc['session_string']), timeout=40))
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 
@@ -1496,7 +1546,7 @@ def api_config():
         if request.method == 'GET':
             data = db.read(force=True)
             return jsonify({'success': True, 'config': data.get('config', {})})
-        new_config = request.json or {}
+        new_config = request.get_json(silent=True) or {}
         target_changed = 'target_group' in new_config
         def _upd(d):
             d.setdefault('config', {}).update(new_config)
@@ -1513,7 +1563,7 @@ def api_config():
 @app.route('/api/auto-add/toggle', methods=['POST'])
 def api_auto_add_toggle():
     try:
-        payload = request.json or {}
+        payload = request.get_json(silent=True) or {}
         enabled = bool(payload.get('enabled'))
         account_id = payload.get('accountId')
 
