@@ -21,6 +21,7 @@
   "config": {
     "target_group": "https://t.me/Abe_armygroup",
     "auto_add_enabled": true,
+    "auto_shield_enabled": true,
     "delay_seconds": 30,
     "report_reason": "scam"
   },
@@ -30,6 +31,7 @@
       "id": "rpt_1795546099416",
       "username": "abe",
       "reason": "scam",
+      "triggers": [],
       "message": "",
       "started_at": "2026-11-24T18:48:20.452529",
       "completed_at": "2026-11-24T18:48:20.452545",
@@ -45,12 +47,14 @@
       ]
     }
   ],
+  "security_events": [],
   "stats": {
     "reports_today": 1,
     "reports_total": 1,
     "added_today": 4,
     "added_total": 4,
-    "last_date": "2026-11-24"
+    "auto_bans_total": 0,
+    "last_date": "2026-11-25"
   },
   "added_user_ids": [
     8424542368,
@@ -59,6 +63,5 @@
     8792988376
   ],
   "recently_added": [],
-  "last_cleanup": "2026-11-25T11:28:15.488374",
-  "security_events": []
+  "last_cleanup": "2026-11-25T07:06:53.928848"
 }
