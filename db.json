@@ -8,7 +8,7 @@
       "session_string": "1BJWap1sBuxH1zkIlurhQeGn3dczm03z_tx-waVoN_vfgW7H1XQ9ydTMJ_Itij7ioz4luSl0dq2VY-TK-7yO0uAiyU6s6DmhC42LZ0tu_1t5xjVu3uYJpI1GxFjogswR0eIaId62zgoN5QqaKwpCTStQf2rkMUa-yhA5sh7ihKjhf1W2S7Iu-GsS3qs94Xkm4o0Yer_1A6sDjdqHP3oOqG7V8k9WfSoD-sVFuKaxdQdQnWc08KyWq61J_huc3-OciR3Enk0jiTOcZIrz2U2izWtRsab32U5354-VJOne21hNRG-NbMS_QNmNmb0SwL5UO5tGPrHutQcRb9gvehmsYjwD8pz_QTVE=",
       "active": true,
       "auto_add_enabled": false,
-      "joined_target": false,
+      "joined_target": true,
       "added_at": "2026-11-25T11:42:05.270328",
       "stats": {
         "report_today": 0,
