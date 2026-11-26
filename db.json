@@ -85,12 +85,12 @@
   ],
   "security_events": [],
   "stats": {
-    "reports_today": 3,
+    "reports_today": 0,
     "reports_total": 3,
-    "added_today": 4,
+    "added_today": 0,
     "added_total": 4,
     "auto_bans_total": 0,
-    "last_date": "2026-11-25"
+    "last_date": "2026-11-26"
   },
   "added_user_ids": [
     8424542368,
