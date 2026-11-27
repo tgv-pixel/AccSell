@@ -87,8 +87,8 @@
   "stats": {
     "reports_today": 0,
     "reports_total": 3,
-    "added_today": 0,
-    "added_total": 4,
+    "added_today": 1,
+    "added_total": 5,
     "auto_bans_total": 0,
     "last_date": "2026-11-26"
   },
@@ -96,8 +96,16 @@
     8424542368,
     7364130232,
     6709998530,
-    8792988376
+    8792988376,
+    7420938284
   ],
-  "recently_added": [],
+  "recently_added": [
+    {
+      "uid": 7420938284,
+      "ts": 1795762864.0707443,
+      "username": "Iamhkr",
+      "ok": true
+    }
+  ],
   "last_cleanup": "2026-11-26T22:08:01.430103"
 }
